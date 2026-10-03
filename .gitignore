@@ -1,0 +1,12 @@
+# 로컬 비밀값 — 절대 커밋 금지 (.env.bak은 create-iam-user.sh가 만드는 백업)
+.env
+.env.*
+!.env.example
+*.pem
+
+# 실행 상태(리소스 ID·키페어·known_hosts)와 자동 설치한 aws CLI
+state/
+.tools/
+
+# Python (다이어그램 생성 스크립트)
+__pycache__/

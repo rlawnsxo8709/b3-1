@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+# 테스트용 가짜 curl — 네트워크에 나가지 않는다. 모든 호출을 "$FAKE_LOG"에 남긴다.
+#   checkip.amazonaws.com  → "${FAKE_IP:-198.51.100.7}"
+#   http://<IP>/health     → 코드 "${FAKE_HEALTH_CODE:-200}", 본문 "OK"
+#   http://<IP>/           → 코드 200, 짧은 HTML
+#   https://awscli.amazonaws.com/*  → "$FAKE_AWSCLI_ZIP" 파일을 -o 위치로 복사(없으면 exit 22)
+# -o FILE(본문 저장), -w FORMAT(%{http_code} 치환), -i(응답 헤더 포함), -f(4xx·5xx면 exit 22)를 흉내 낸다.
+set -u
+printf 'curl %s\n' "$*" >> "${FAKE_LOG:-/dev/null}"
+
+out=""
+fmt=""
+include=0
+failflag=0
+url=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -o | --output) out="$2"; shift 2; continue ;;
+    -w | --write-out) fmt="$2"; shift 2; continue ;;
+    -m | --max-time | --connect-timeout | --retry) shift 2; continue ;;
+    -i | --include) include=1 ;;
+    --*) ;;
+    -*)
+      [[ "$1" == *f* ]] && failflag=1
+      [[ "$1" == *i* ]] && include=1
+      ;;
+    *) url="$1" ;;
+  esac
+  shift
+done
+
+case "$url" in
+  *checkip*)
+    printf '%s\n' "${FAKE_IP:-198.51.100.7}"
+    exit 0
+    ;;
+  https://awscli.amazonaws.com/*)
+    if [ -n "${FAKE_AWSCLI_ZIP:-}" ] && [ -n "$out" ]; then
+      cp "$FAKE_AWSCLI_ZIP" "$out"
+      exit 0
+    fi
+    echo "curl: (22) The requested URL returned error: 404 (fake)" >&2
+    exit 22
+    ;;
+  http://*/health)
+    code="${FAKE_HEALTH_CODE:-200}"
+    if [ "$code" = 200 ]; then body=$'OK\n'; else body=$'Service Unavailable\n'; fi
+    ctype="text/plain"
+    ;;
+  http://*)
+    code=200
+    body=$'<!doctype html><title>Hello Cloud</title><h1>Hello Cloud — Codyssey B3-1</h1>\n'
+    ctype="text/html"
+    ;;
+  *)
+    echo "curl: (6) Could not resolve host (fake)" >&2
+    exit 6
+    ;;
+esac
+
+response="$body"
+if [ "$include" = 1 ]; then
+  response="$(printf 'HTTP/1.1 %s FAKE\r\nServer: nginx (fake)\r\nContent-Type: %s\r\n\r\n' "$code" "$ctype")"$'\n'"$body"
+fi
+if [ -n "$out" ]; then
+  [ "$out" = /dev/null ] || printf '%s' "$response" > "$out"
+else
+  printf '%s' "$response"
+fi
+if [ -n "$fmt" ]; then
+  pat='%{http_code}'
+  printf '%b' "${fmt//"$pat"/$code}"
+fi
+if [ "$failflag" = 1 ] && [ "$code" -ge 400 ]; then
+  exit 22
+fi
+exit 0

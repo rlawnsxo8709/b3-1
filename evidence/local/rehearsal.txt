@@ -1,0 +1,328 @@
+# 로컬 리허설 (AWS 아님)
+# server/user-data.sh를 ubuntu:24.04 컨테이너에서 그대로 실행해 Nginx 설정과 /, /health 응답을 확인한다.
+# EC2·VPC·보안 그룹·IAM은 이 리허설의 검증 대상이 아니다. AWS 실행 결과는 evidence/aws/에 따로 남는다.
+# 컨테이너 포트 80 → 호스트 127.0.0.1:18080 (호스트 curl = '외부에서 접속'에 해당)
+# 실행 시각: 2026-10-04 04:48:57 +0900 / 호스트: Linux aarch64 / Docker 29.1.3
+
+## 1. 컨테이너 기동과 user-data 실행
+
+$ docker run -d --name b3-1-rehearsal -p 127.0.0.1:18080:80 ubuntu:24.04 sleep infinity
+0421d935f6fbb8f3e9fd9b852cb181f53a085c2800f5268b9aa673a614c9392d
+
+$ docker cp server/user-data.sh b3-1-rehearsal:/tmp/user-data.sh
+
+$ docker exec b3-1-rehearsal bash /tmp/user-data.sh
++ export DEBIAN_FRONTEND=noninteractive
++ DEBIAN_FRONTEND=noninteractive
++ APT=(apt-get -o DPkg::Lock::Timeout=300)
++ for attempt in 1 2 3
++ apt-get -o DPkg::Lock::Timeout=300 update
+Get:1 http://ports.ubuntu.com/ubuntu-ports noble InRelease [256 kB]
+Get:2 http://ports.ubuntu.com/ubuntu-ports noble-updates InRelease [126 kB]
+Get:3 http://ports.ubuntu.com/ubuntu-ports noble-backports InRelease [126 kB]
+Get:4 http://ports.ubuntu.com/ubuntu-ports noble-security InRelease [126 kB]
+Get:5 http://ports.ubuntu.com/ubuntu-ports noble/main arm64 Packages [1776 kB]
+Get:6 http://ports.ubuntu.com/ubuntu-ports noble/universe arm64 Packages [19.0 MB]
+Get:7 http://ports.ubuntu.com/ubuntu-ports noble/restricted arm64 Packages [113 kB]
+Get:8 http://ports.ubuntu.com/ubuntu-ports noble/multiverse arm64 Packages [274 kB]
+Get:9 http://ports.ubuntu.com/ubuntu-ports noble-updates/restricted arm64 Packages [3122 kB]
+Get:10 http://ports.ubuntu.com/ubuntu-ports noble-updates/multiverse arm64 Packages [94.8 kB]
+Get:11 http://ports.ubuntu.com/ubuntu-ports noble-updates/universe arm64 Packages [2201 kB]
+Get:12 http://ports.ubuntu.com/ubuntu-ports noble-updates/main arm64 Packages [1753 kB]
+Get:13 http://ports.ubuntu.com/ubuntu-ports noble-backports/universe arm64 Packages [36.3 kB]
+Get:14 http://ports.ubuntu.com/ubuntu-ports noble-backports/multiverse arm64 Packages [671 B]
+Get:15 http://ports.ubuntu.com/ubuntu-ports noble-backports/main arm64 Packages [49.0 kB]
+Get:16 http://ports.ubuntu.com/ubuntu-ports noble-security/main arm64 Packages [1388 kB]
+Get:17 http://ports.ubuntu.com/ubuntu-ports noble-security/universe arm64 Packages [1624 kB]
+Get:18 http://ports.ubuntu.com/ubuntu-ports noble-security/multiverse arm64 Packages [89.7 kB]
+Get:19 http://ports.ubuntu.com/ubuntu-ports noble-security/restricted arm64 Packages [2886 kB]
+Fetched 35.1 MB in 8s (4335 kB/s)
+Reading package lists...
++ break
++ apt-get -o DPkg::Lock::Timeout=300 install -y nginx curl
+Reading package lists...
+Building dependency tree...
+Reading state information...
+The following additional packages will be installed:
+  ca-certificates iproute2 krb5-locales libatm1t64 libbpf1 libbrotli1
+  libcap2-bin libcurl4t64 libelf1t64 libgssapi-krb5-2 libk5crypto3
+  libkeyutils1 libkrb5-3 libkrb5support0 libldap-common libldap2 libmnl0
+  libnghttp2-14 libpam-cap libpsl5t64 librtmp1 libsasl2-2 libsasl2-modules
+  libsasl2-modules-db libssh-4 libssl3t64 libxtables12 nginx-common openssl
+  publicsuffix
+Suggested packages:
+  iproute2-doc python3:any krb5-doc krb5-user libsasl2-modules-gssapi-mit
+  | libsasl2-modules-gssapi-heimdal libsasl2-modules-ldap libsasl2-modules-otp
+  libsasl2-modules-sql fcgiwrap nginx-doc ssl-cert
+The following NEW packages will be installed:
+  ca-certificates curl iproute2 krb5-locales libatm1t64 libbpf1 libbrotli1
+  libcap2-bin libcurl4t64 libelf1t64 libgssapi-krb5-2 libk5crypto3
+  libkeyutils1 libkrb5-3 libkrb5support0 libldap-common libldap2 libmnl0
+  libnghttp2-14 libpam-cap libpsl5t64 librtmp1 libsasl2-2 libsasl2-modules
+  libsasl2-modules-db libssh-4 libxtables12 nginx nginx-common openssl
+  publicsuffix
+The following packages will be upgraded:
+  libssl3t64
+1 upgraded, 31 newly installed, 0 to remove and 33 not upgraded.
+Need to get 7419 kB of archives.
+After this operation, 16.7 MB of additional disk space will be used.
+Get:1 http://ports.ubuntu.com/ubuntu-ports noble-updates/main arm64 libssl3t64 arm64 3.0.13-0ubuntu3.16 [1838 kB]
+Get:2 http://ports.ubuntu.com/ubuntu-ports noble-updates/main arm64 openssl arm64 3.0.13-0ubuntu3.16 [985 kB]
+Get:3 http://ports.ubuntu.com/ubuntu-ports noble-updates/main arm64 ca-certificates all 20260601~24.04.1 [139 kB]
+Get:4 http://ports.ubuntu.com/ubuntu-ports noble-updates/main arm64 libelf1t64 arm64 0.190-1.1ubuntu0.1 [58.4 kB]
+Get:5 http://ports.ubuntu.com/ubuntu-ports noble/main arm64 libbpf1 arm64 1:1.3.0-2build2 [168 kB]
+Get:6 http://ports.ubuntu.com/ubuntu-ports noble/main arm64 libmnl0 arm64 1.0.5-2build1 [12.4 kB]
+Get:7 http://ports.ubuntu.com/ubuntu-ports noble/main arm64 libxtables12 arm64 1.8.10-3ubuntu2 [35.9 kB]
+Get:8 http://ports.ubuntu.com/ubuntu-ports noble-updates/main arm64 libcap2-bin arm64 1:2.66-5ubuntu2.4 [33.5 kB]
+Get:9 http://ports.ubuntu.com/ubuntu-ports noble-updates/main arm64 iproute2 arm64 6.1.0-1ubuntu6.4 [1126 kB]
+Get:10 http://ports.ubuntu.com/ubuntu-ports noble-updates/main arm64 krb5-locales all 1.20.1-6ubuntu2.10 [15.3 kB]
+Get:11 http://ports.ubuntu.com/ubuntu-ports noble/main arm64 libatm1t64 arm64 1:2.5.1-5.1build1 [23.5 kB]
+Get:12 http://ports.ubuntu.com/ubuntu-ports noble-updates/main arm64 libkrb5support0 arm64 1.20.1-6ubuntu2.10 [35.4 kB]
+Get:13 http://ports.ubuntu.com/ubuntu-ports noble-updates/main arm64 libk5crypto3 arm64 1.20.1-6ubuntu2.10 [85.8 kB]
+Get:14 http://ports.ubuntu.com/ubuntu-ports noble/main arm64 libkeyutils1 arm64 1.6.3-3build1 [9654 B]
+Get:15 http://ports.ubuntu.com/ubuntu-ports noble-updates/main arm64 libkrb5-3 arm64 1.20.1-6ubuntu2.10 [350 kB]
+Get:16 http://ports.ubuntu.com/ubuntu-ports noble-updates/main arm64 libgssapi-krb5-2 arm64 1.20.1-6ubuntu2.10 [142 kB]
+Get:17 http://ports.ubuntu.com/ubuntu-ports noble-updates/main arm64 libpam-cap arm64 1:2.66-5ubuntu2.4 [12.5 kB]
+Get:18 http://ports.ubuntu.com/ubuntu-ports noble-updates/main arm64 libnghttp2-14 arm64 1.59.0-1ubuntu0.4 [74.8 kB]
+Get:19 http://ports.ubuntu.com/ubuntu-ports noble/main arm64 libpsl5t64 arm64 0.21.2-1.1build1 [57.4 kB]
+Get:20 http://ports.ubuntu.com/ubuntu-ports noble/main arm64 publicsuffix all 20231001.0357-0.1 [129 kB]
+Get:21 http://ports.ubuntu.com/ubuntu-ports noble/main arm64 libbrotli1 arm64 1.1.0-2build2 [339 kB]
+Get:22 http://ports.ubuntu.com/ubuntu-ports noble-updates/main arm64 libsasl2-modules-db arm64 2.1.28+dfsg1-5ubuntu3.1 [21.6 kB]
+Get:23 http://ports.ubuntu.com/ubuntu-ports noble-updates/main arm64 libsasl2-2 arm64 2.1.28+dfsg1-5ubuntu3.1 [54.7 kB]
+Get:24 http://ports.ubuntu.com/ubuntu-ports noble-updates/main arm64 libldap2 arm64 2.6.10+dfsg-0ubuntu0.24.04.1 [196 kB]
+Get:25 http://ports.ubuntu.com/ubuntu-ports noble/main arm64 librtmp1 arm64 2.4+20151223.gitfa8646d.1-2build7 [57.8 kB]
+Get:26 http://ports.ubuntu.com/ubuntu-ports noble-updates/main arm64 libssh-4 arm64 0.10.6-2ubuntu0.5 [192 kB]
+Get:27 http://ports.ubuntu.com/ubuntu-ports noble-updates/main arm64 libcurl4t64 arm64 8.5.0-2ubuntu10.15 [337 kB]
+Get:28 http://ports.ubuntu.com/ubuntu-ports noble-updates/main arm64 curl arm64 8.5.0-2ubuntu10.15 [222 kB]
+Get:29 http://ports.ubuntu.com/ubuntu-ports noble-updates/main arm64 libldap-common all 2.6.10+dfsg-0ubuntu0.24.04.1 [32.9 kB]
+Get:30 http://ports.ubuntu.com/ubuntu-ports noble-updates/main arm64 libsasl2-modules arm64 2.1.28+dfsg1-5ubuntu3.1 [69.6 kB]
+Get:31 http://ports.ubuntu.com/ubuntu-ports noble-updates/main arm64 nginx-common all 1.24.0-2ubuntu7.18 [45.1 kB]
+Get:32 http://ports.ubuntu.com/ubuntu-ports noble-updates/main arm64 nginx arm64 1.24.0-2ubuntu7.18 [521 kB]
+debconf: delaying package configuration, since apt-utils is not installed
+Fetched 7419 kB in 5s (1492 kB/s)
+(Reading database ... (Reading database ... 5%(Reading database ... 10%(Reading database ... 15%(Reading database ... 20%(Reading database ... 25%(Reading database ... 30%(Reading database ... 35%(Reading database ... 40%(Reading database ... 45%(Reading database ... 50%(Reading database ... 55%(Reading database ... 60%(Reading database ... 65%(Reading database ... 70%(Reading database ... 75%(Reading database ... 80%(Reading database ... 85%(Reading database ... 90%(Reading database ... 95%(Reading database ... 100%(Reading database ... 4376 files and directories currently installed.)
+Preparing to unpack .../libssl3t64_3.0.13-0ubuntu3.16_arm64.deb ...
+Unpacking libssl3t64:arm64 (3.0.13-0ubuntu3.16) over (3.0.13-0ubuntu3.12) ...
+Setting up libssl3t64:arm64 (3.0.13-0ubuntu3.16) ...
+Selecting previously unselected package openssl.
+(Reading database ... (Reading database ... 5%(Reading database ... 10%(Reading database ... 15%(Reading database ... 20%(Reading database ... 25%(Reading database ... 30%(Reading database ... 35%(Reading database ... 40%(Reading database ... 45%(Reading database ... 50%(Reading database ... 55%(Reading database ... 60%(Reading database ... 65%(Reading database ... 70%(Reading database ... 75%(Reading database ... 80%(Reading database ... 85%(Reading database ... 90%(Reading database ... 95%(Reading database ... 100%(Reading database ... 4376 files and directories currently installed.)
+Preparing to unpack .../00-openssl_3.0.13-0ubuntu3.16_arm64.deb ...
+Unpacking openssl (3.0.13-0ubuntu3.16) ...
+Selecting previously unselected package ca-certificates.
+Preparing to unpack .../01-ca-certificates_20260601~24.04.1_all.deb ...
+Unpacking ca-certificates (20260601~24.04.1) ...
+Selecting previously unselected package libelf1t64:arm64.
+Preparing to unpack .../02-libelf1t64_0.190-1.1ubuntu0.1_arm64.deb ...
+Unpacking libelf1t64:arm64 (0.190-1.1ubuntu0.1) ...
+Selecting previously unselected package libbpf1:arm64.
+Preparing to unpack .../03-libbpf1_1%3a1.3.0-2build2_arm64.deb ...
+Unpacking libbpf1:arm64 (1:1.3.0-2build2) ...
+Selecting previously unselected package libmnl0:arm64.
+Preparing to unpack .../04-libmnl0_1.0.5-2build1_arm64.deb ...
+Unpacking libmnl0:arm64 (1.0.5-2build1) ...
+Selecting previously unselected package libxtables12:arm64.
+Preparing to unpack .../05-libxtables12_1.8.10-3ubuntu2_arm64.deb ...
+Unpacking libxtables12:arm64 (1.8.10-3ubuntu2) ...
+Selecting previously unselected package libcap2-bin.
+Preparing to unpack .../06-libcap2-bin_1%3a2.66-5ubuntu2.4_arm64.deb ...
+Unpacking libcap2-bin (1:2.66-5ubuntu2.4) ...
+Selecting previously unselected package iproute2.
+Preparing to unpack .../07-iproute2_6.1.0-1ubuntu6.4_arm64.deb ...
+Unpacking iproute2 (6.1.0-1ubuntu6.4) ...
+Selecting previously unselected package krb5-locales.
+Preparing to unpack .../08-krb5-locales_1.20.1-6ubuntu2.10_all.deb ...
+Unpacking krb5-locales (1.20.1-6ubuntu2.10) ...
+Selecting previously unselected package libatm1t64:arm64.
+Preparing to unpack .../09-libatm1t64_1%3a2.5.1-5.1build1_arm64.deb ...
+Unpacking libatm1t64:arm64 (1:2.5.1-5.1build1) ...
+Selecting previously unselected package libkrb5support0:arm64.
+Preparing to unpack .../10-libkrb5support0_1.20.1-6ubuntu2.10_arm64.deb ...
+Unpacking libkrb5support0:arm64 (1.20.1-6ubuntu2.10) ...
+Selecting previously unselected package libk5crypto3:arm64.
+Preparing to unpack .../11-libk5crypto3_1.20.1-6ubuntu2.10_arm64.deb ...
+Unpacking libk5crypto3:arm64 (1.20.1-6ubuntu2.10) ...
+Selecting previously unselected package libkeyutils1:arm64.
+Preparing to unpack .../12-libkeyutils1_1.6.3-3build1_arm64.deb ...
+Unpacking libkeyutils1:arm64 (1.6.3-3build1) ...
+Selecting previously unselected package libkrb5-3:arm64.
+Preparing to unpack .../13-libkrb5-3_1.20.1-6ubuntu2.10_arm64.deb ...
+Unpacking libkrb5-3:arm64 (1.20.1-6ubuntu2.10) ...
+Selecting previously unselected package libgssapi-krb5-2:arm64.
+Preparing to unpack .../14-libgssapi-krb5-2_1.20.1-6ubuntu2.10_arm64.deb ...
+Unpacking libgssapi-krb5-2:arm64 (1.20.1-6ubuntu2.10) ...
+Selecting previously unselected package libpam-cap:arm64.
+Preparing to unpack .../15-libpam-cap_1%3a2.66-5ubuntu2.4_arm64.deb ...
+Unpacking libpam-cap:arm64 (1:2.66-5ubuntu2.4) ...
+Selecting previously unselected package libnghttp2-14:arm64.
+Preparing to unpack .../16-libnghttp2-14_1.59.0-1ubuntu0.4_arm64.deb ...
+Unpacking libnghttp2-14:arm64 (1.59.0-1ubuntu0.4) ...
+Selecting previously unselected package libpsl5t64:arm64.
+Preparing to unpack .../17-libpsl5t64_0.21.2-1.1build1_arm64.deb ...
+Unpacking libpsl5t64:arm64 (0.21.2-1.1build1) ...
+Selecting previously unselected package publicsuffix.
+Preparing to unpack .../18-publicsuffix_20231001.0357-0.1_all.deb ...
+Unpacking publicsuffix (20231001.0357-0.1) ...
+Selecting previously unselected package libbrotli1:arm64.
+Preparing to unpack .../19-libbrotli1_1.1.0-2build2_arm64.deb ...
+Unpacking libbrotli1:arm64 (1.1.0-2build2) ...
+Selecting previously unselected package libsasl2-modules-db:arm64.
+Preparing to unpack .../20-libsasl2-modules-db_2.1.28+dfsg1-5ubuntu3.1_arm64.deb ...
+Unpacking libsasl2-modules-db:arm64 (2.1.28+dfsg1-5ubuntu3.1) ...
+Selecting previously unselected package libsasl2-2:arm64.
+Preparing to unpack .../21-libsasl2-2_2.1.28+dfsg1-5ubuntu3.1_arm64.deb ...
+Unpacking libsasl2-2:arm64 (2.1.28+dfsg1-5ubuntu3.1) ...
+Selecting previously unselected package libldap2:arm64.
+Preparing to unpack .../22-libldap2_2.6.10+dfsg-0ubuntu0.24.04.1_arm64.deb ...
+Unpacking libldap2:arm64 (2.6.10+dfsg-0ubuntu0.24.04.1) ...
+Selecting previously unselected package librtmp1:arm64.
+Preparing to unpack .../23-librtmp1_2.4+20151223.gitfa8646d.1-2build7_arm64.deb ...
+Unpacking librtmp1:arm64 (2.4+20151223.gitfa8646d.1-2build7) ...
+Selecting previously unselected package libssh-4:arm64.
+Preparing to unpack .../24-libssh-4_0.10.6-2ubuntu0.5_arm64.deb ...
+Unpacking libssh-4:arm64 (0.10.6-2ubuntu0.5) ...
+Selecting previously unselected package libcurl4t64:arm64.
+Preparing to unpack .../25-libcurl4t64_8.5.0-2ubuntu10.15_arm64.deb ...
+Unpacking libcurl4t64:arm64 (8.5.0-2ubuntu10.15) ...
+Selecting previously unselected package curl.
+Preparing to unpack .../26-curl_8.5.0-2ubuntu10.15_arm64.deb ...
+Unpacking curl (8.5.0-2ubuntu10.15) ...
+Selecting previously unselected package libldap-common.
+Preparing to unpack .../27-libldap-common_2.6.10+dfsg-0ubuntu0.24.04.1_all.deb ...
+Unpacking libldap-common (2.6.10+dfsg-0ubuntu0.24.04.1) ...
+Selecting previously unselected package libsasl2-modules:arm64.
+Preparing to unpack .../28-libsasl2-modules_2.1.28+dfsg1-5ubuntu3.1_arm64.deb ...
+Unpacking libsasl2-modules:arm64 (2.1.28+dfsg1-5ubuntu3.1) ...
+Selecting previously unselected package nginx-common.
+Preparing to unpack .../29-nginx-common_1.24.0-2ubuntu7.18_all.deb ...
+Unpacking nginx-common (1.24.0-2ubuntu7.18) ...
+Selecting previously unselected package nginx.
+Preparing to unpack .../30-nginx_1.24.0-2ubuntu7.18_arm64.deb ...
+Unpacking nginx (1.24.0-2ubuntu7.18) ...
+Setting up libkeyutils1:arm64 (1.6.3-3build1) ...
+Setting up libatm1t64:arm64 (1:2.5.1-5.1build1) ...
+Setting up libbrotli1:arm64 (1.1.0-2build2) ...
+Setting up libsasl2-modules:arm64 (2.1.28+dfsg1-5ubuntu3.1) ...
+Setting up libpsl5t64:arm64 (0.21.2-1.1build1) ...
+Setting up libnghttp2-14:arm64 (1.59.0-1ubuntu0.4) ...
+Setting up nginx-common (1.24.0-2ubuntu7.18) ...
+Setting up krb5-locales (1.20.1-6ubuntu2.10) ...
+Setting up libldap-common (2.6.10+dfsg-0ubuntu0.24.04.1) ...
+Setting up libelf1t64:arm64 (0.190-1.1ubuntu0.1) ...
+Setting up libkrb5support0:arm64 (1.20.1-6ubuntu2.10) ...
+Setting up libsasl2-modules-db:arm64 (2.1.28+dfsg1-5ubuntu3.1) ...
+Setting up libcap2-bin (1:2.66-5ubuntu2.4) ...
+Setting up librtmp1:arm64 (2.4+20151223.gitfa8646d.1-2build7) ...
+Setting up libmnl0:arm64 (1.0.5-2build1) ...
+Setting up libk5crypto3:arm64 (1.20.1-6ubuntu2.10) ...
+Setting up libxtables12:arm64 (1.8.10-3ubuntu2) ...
+Setting up libsasl2-2:arm64 (2.1.28+dfsg1-5ubuntu3.1) ...
+Setting up libkrb5-3:arm64 (1.20.1-6ubuntu2.10) ...
+Setting up openssl (3.0.13-0ubuntu3.16) ...
+Setting up libpam-cap:arm64 (1:2.66-5ubuntu2.4) ...
+Setting up publicsuffix (20231001.0357-0.1) ...
+Setting up libldap2:arm64 (2.6.10+dfsg-0ubuntu0.24.04.1) ...
+Setting up libbpf1:arm64 (1:1.3.0-2build2) ...
+Setting up iproute2 (6.1.0-1ubuntu6.4) ...
+Setting up ca-certificates (20260601~24.04.1) ...
+Updating certificates in /etc/ssl/certs...
+121 added, 0 removed; done.
+Setting up libgssapi-krb5-2:arm64 (1.20.1-6ubuntu2.10) ...
+Setting up libssh-4:arm64 (0.10.6-2ubuntu0.5) ...
+Setting up libcurl4t64:arm64 (8.5.0-2ubuntu10.15) ...
+Setting up nginx (1.24.0-2ubuntu7.18) ...
+invoke-rc.d: could not determine current runlevel
+invoke-rc.d: policy-rc.d denied execution of start.
+Setting up curl (8.5.0-2ubuntu10.15) ...
+Processing triggers for libc-bin (2.39-0ubuntu8.8) ...
+Processing triggers for ca-certificates (20260601~24.04.1) ...
+Updating certificates in /etc/ssl/certs...
+0 added, 0 removed; done.
+Running hooks in /etc/ca-certificates/update.d...
+done.
+++ hostname
++ SERVER_HOST=0421d935f6fb
+++ date '+%Y-%m-%d %H:%M:%S %Z'
++ DEPLOYED_AT='2026-10-03 19:49:14 UTC'
++ cat
++ cat
++ ln -sf /etc/nginx/sites-available/default /etc/nginx/sites-enabled/default
++ nginx -t
+nginx: the configuration file /etc/nginx/nginx.conf syntax is ok
+nginx: configuration file /etc/nginx/nginx.conf test is successful
++ '[' -d /run/systemd/system ']'
++ nginx -s reload
++ nginx
+
+## 2. 컨테이너 안에서 확인 (EC2 안에서 curl localhost 에 해당)
+
+$ docker exec b3-1-rehearsal curl -s -o /dev/null -w %{http_code} http://localhost/
+200
+$ docker exec b3-1-rehearsal curl -s -o /dev/null -w %{http_code} http://localhost/health
+200
+$ docker exec b3-1-rehearsal curl -s http://localhost/health
+OK
+
+$ docker exec b3-1-rehearsal curl -s -i http://localhost/health
+HTTP/1.1 200 OK
+Server: nginx/1.24.0 (Ubuntu)
+Date: Sat, 03 Oct 2026 19:49:14 GMT
+Content-Type: text/plain
+Content-Length: 3
+Connection: keep-alive
+
+OK
+[PASS] 컨테이너 안 GET / — 기대: 200 / 실제: 200
+[PASS] 컨테이너 안 GET /health 코드 — 기대: 200 / 실제: 200
+[PASS] 컨테이너 안 GET /health 본문 — 기대: OK / 실제: OK
+
+## 3. 호스트에서 확인 (외부 접속 경로에 해당)
+
+$ curl -s -o /dev/null -w %{http_code} http://127.0.0.1:18080/health
+200
+$ curl -sS -i http://127.0.0.1:18080/health
+HTTP/1.1 200 OK
+Server: nginx/1.24.0 (Ubuntu)
+Date: Sat, 03 Oct 2026 19:49:14 GMT
+Content-Type: text/plain
+Content-Length: 3
+Connection: keep-alive
+
+OK
+
+$ curl -s -o /dev/null -w %{http_code} http://127.0.0.1:18080/
+200
+$ curl -sS http://127.0.0.1:18080/
+<!doctype html>
+<html lang="ko">
+<head><meta charset="utf-8"><title>Hello Cloud — Codyssey B3-1</title></head>
+<body>
+  <h1>Hello Cloud — Codyssey B3-1</h1>
+  <p>host: 0421d935f6fb</p>
+  <p>deployed at: 2026-10-03 19:49:14 UTC</p>
+  <p>health check: <a href="/health">/health</a></p>
+</body>
+</html>
+[PASS] 호스트 GET /health 코드 — 기대: 200 / 실제: 200
+[PASS] 호스트 GET / 코드 — 기대: 200 / 실제: 200
+
+## 4. 리슨 소켓과 적용된 Nginx 설정
+
+$ docker exec b3-1-rehearsal ss -tlnp
+State  Recv-Q Send-Q Local Address:Port Peer Address:PortProcess                         
+LISTEN 0      511          0.0.0.0:80        0.0.0.0:*    users:(("nginx",pid=2657,fd=5))
+LISTEN 0      511             [::]:80           [::]:*    users:(("nginx",pid=2657,fd=6))
+
+$ docker exec b3-1-rehearsal bash -c nginx -T 2>/dev/null | awk '/# configuration file \/etc\/nginx\/sites-enabled\/default/{f=1} /# configuration file/{if($0 !~ /sites-enabled\/default/) f=0} f'
+# configuration file /etc/nginx/sites-enabled/default:
+server {
+    listen 80 default_server;
+    listen [::]:80 default_server;
+    root /var/www/html;
+    index index.html;
+    location = /health { default_type text/plain; return 200 "OK\n"; }
+    location / { try_files $uri $uri/ =404; }
+}
+
+
+리허설 결과: 전체 통과 — 컨테이너 안 / 200, /health 200 OK, 호스트 /health 200, 호스트 / 200
+# 컨테이너 b3-1-rehearsal 는 종료 시 자동 삭제된다 (trap)

@@ -7,8 +7,8 @@
 |---|---|
 | 실행 | `./deploy.sh` → `./verify.sh` → `./cleanup.sh` |
 | 리전 | 서울 `ap-northeast-2` (다른 값이면 중단) |
-| 인스턴스 | `t3.micro`(기본) 또는 `t2.micro`, Ubuntu 24.04 LTS, EBS gp3 8GiB |
-| 필요한 것 | Linux 또는 WSL의 Bash, `curl`, `ssh`. aws CLI v2는 없으면 `./.tools`에 자동 설치(sudo 불필요, `unzip` 필요) |
+| 인스턴스 | `t3.micro`(기본) 또는 `t2.micro` — 계정의 프리 티어 대상 유형을 고른다([확인 방법](#프리-티어-대상-인스턴스-유형-확인)), Ubuntu 24.04 LTS, EBS gp3 8GiB |
+| 필요한 것 | Linux 또는 WSL의 **Bash 4 이상**(macOS 기본 bash 3.2는 안 됨 → `brew install bash` 후 `bash ./deploy.sh`), `curl`, `ssh`. aws CLI v2는 없으면 `./.tools`에 자동 설치(sudo 불필요, `unzip` 필요) |
 | 외부 접속 검증 | **방식 B — `GET http://<퍼블릭IP>/health` → 200 + `OK`** |
 
 설계 결정은 [PLAN.md](PLAN.md), 과제 목표·평가 문항 답변은 [EXPLAIN.md](EXPLAIN.md)에 있다.
@@ -29,6 +29,8 @@ cp .env.example .env
 ```
 
 IAM 사용자가 아직 없다면 → [IAM 사용자 만들기](#iam-사용자-만들기)
+
+기본 유형은 `t3.micro`다. 2025-07-15 이전에 가입한 계정(레거시 프리 티어)은 서울에서 `t2.micro`가 대상일 수 있다 → [프리 티어 대상 인스턴스 유형 확인](#프리-티어-대상-인스턴스-유형-확인)
 
 **2단계 — 배포하고 스크린샷 1장**
 
@@ -123,7 +125,7 @@ Elastic IP·NAT Gateway·ELB·RDS는 만들지 않는다.
 | `DenyNonFreeTierTypes` | Deny | `t2.micro`·`t3.micro`가 아닌 유형으로 `RunInstances` 금지 |
 
 **들어 있지 않은 것**: S3·RDS·IAM·ELB 등 EC2 밖의 모든 서비스, `ec2:*`, EIP 할당(`AllocateAddress`), NAT Gateway 생성. `sts:GetCallerIdentity`는 권한 없이 항상 호출할 수 있어 넣지 않았다.
-테스트 `test_iam_policy_covers_every_ec2_call_in_scripts`가 세 스크립트에 나오는 모든 `aws ec2 <작업>`이 이 정책으로 허용되는지 대조한다. 스크립트가 쓰지 않는 권한은 정책에 넣지 않는다.
+테스트 `test_iam_policy_covers_every_ec2_call_in_scripts`가 세 스크립트에 나오는 모든 `aws ec2 <작업>`이 이 정책으로 허용되는지 대조한다(빠진 권한을 잡는 검사다). 스크립트가 쓰지 않는 권한은 정책에 넣지 않았다. 단 하나의 예외는 `ec2:RevokeSecurityGroupIngress`다. 내 IP가 바뀌었을 때 이전 SSH 규칙을 손으로 지우는 데 쓴다([troubleshooting.md의 SSH 허용 IP 갱신](docs/troubleshooting.md#ssh-허용-ip-갱신)).
 
 ### IAM 사용자 만들기
 
@@ -153,7 +155,7 @@ ADMIN_AWS_ACCESS_KEY_ID=... ADMIN_AWS_SECRET_ACCESS_KEY=... ./iam/create-iam-use
 | 명령 | 하는 일 |
 |---|---|
 | `./deploy.sh` | 사전 점검 → 리소스 생성 → `/health` 200 대기(5초 간격 최대 5분) → 외부 검증 → 증거 저장 → 접속 정보 출력 |
-| `./deploy.sh --preflight-only` | `.env`·aws CLI·자격 증명(루트 거부)·내 IP 확인까지만. 리소스를 만들지 않는다 |
+| `./deploy.sh --preflight-only` | `.env`·aws CLI·자격 증명(루트 거부)·내 IP·프리 티어 대상 유형 확인까지만. 리소스를 만들지 않는다 |
 | `./verify.sh` | 외부 `/health`·`/`, SSH로 `systemctl is-active nginx`·`curl localhost`·`curl https://example.com` 확인. 하나라도 실패하면 종료 코드 1 |
 | `./verify.sh --wait` | `/health`가 200이 될 때까지 기다린 뒤 검증 (`deploy.sh`가 부른다) |
 | `./cleanup.sh` | 역순 삭제 → 태그로 잔여 조회 → 0건이면 상태 파일을 `state/resources.cleaned-<시각>.env`로 보관 |
@@ -165,14 +167,30 @@ ADMIN_AWS_ACCESS_KEY_ID=... ADMIN_AWS_SECRET_ACCESS_KEY=... ./iam/create-iam-use
 
 | 상황 | 결과 |
 |---|---|
-| `.env`가 없거나 키가 비어 있음 | 무엇을 채울지 안내하고 종료 코드 1. AWS를 한 번도 부르지 않는다 |
+| bash 4 미만(macOS 기본 bash 3.2 등) | 아무것도 하기 전에 안내하고 종료 코드 1(배포만 되고 정리가 안 되는 상황 방지) |
+| `.env`가 없거나 키가 비어 있음 | 무엇을 채울지 안내하고 종료 코드 1. AWS를 한 번도 부르지 않는다. **셸에 export한 `AWS_ACCESS_KEY_ID`·`AWS_SECRET_ACCESS_KEY`·`AWS_SESSION_TOKEN`은 쓰지 않는다**(다른 계정·루트 키가 조용히 쓰이거나 임시 토큰이 섞이는 사고 방지) |
 | 루트 계정 키 (`arn:aws:iam::<id>:root`) | 즉시 거부 — 미션 제약 "루트 금지" |
 | 리전이 서울이 아님 / 프리 티어 외 인스턴스 유형 | 거부 |
-| 내 IP 자동 감지 실패 또는 IPv4가 아님 | 22번을 넓게 열지 않고 중단, `MY_IP`를 직접 넣으라고 안내 |
+| 내 IP 자동 감지 실패 또는 IPv4가 아님 | 22번을 넓게 열지 않고 중단, `MY_IP`를 직접 넣으라고 안내. `MY_IP`는 `.env` → 셸 환경변수 → 자동 감지 순으로 정하고 출처를 로그에 적는다 |
+| 고른 유형이 이 계정의 프리 티어 대상이 아님 | **경고만** 하고 진행한다(차단하지 않음). 대상 유형과 `.env`에 넣을 값을 알려 준다 |
+
+### 프리 티어 대상 인스턴스 유형 확인
+
+프리 티어 대상 유형은 계정마다 다르다. 2025-07-15 이후 가입 계정은 `t3.micro` 등, 그 이전에 가입한 계정(레거시 프리 티어)은 서울에서 `t2.micro`가 대상이다. 대상이 아닌 유형은 프리 티어 기간에도 과금된다.
+
+```bash
+aws ec2 describe-instance-types --region ap-northeast-2 \
+  --filters Name=free-tier-eligible,Values=true \
+  --query 'InstanceTypes[].InstanceType' --output text
+```
+
+결과에 `t3.micro`가 있으면 기본값 그대로 쓴다. `t2.micro`만 있으면 `.env`에 `INSTANCE_TYPE=t2.micro`를 넣는다. `deploy.sh`도 사전 점검에서 같은 조회를 하고, 대상이 아니면 경고와 함께 넣을 값을 알려 준다(차단은 하지 않음).
+스크립트와 IAM 정책의 Deny는 `t2.micro`·`t3.micro` 두 가지만 허용한다. 그 밖의 유형(예: `t4g.micro`)이 대상이더라도 이 실습에서는 쓰지 않는다.
 
 ### 재실행과 실패 시 동작
 
 - 각 단계는 만든 리소스 ID를 **즉시** `state/resources.env`에 적는다. 다시 실행하면 이미 끝난 단계(생성·연결·규칙 추가)는 건너뛰고 이어서 진행한다.
+- 방금 만든 VPC·서브넷은 조회될 때까지 기다린 뒤 다음 단계로 간다(`wait vpc-exists`, 서브넷은 NotFound 재시도). AWS API의 최종 일관성 때문에 생성 직후 잠깐 "없음"이 나올 수 있기 때문이다.
 - 실패하면 `[ERROR] 단계 실패: <단계>. 원인을 고친 뒤 ./deploy.sh를 다시 실행하면 이어서 진행합니다. 정리는 ./cleanup.sh`가 나온다.
 - `cleanup.sh`는 상태 파일 값과 `Project=b3-1` 태그 조회 결과를 **합쳐** 지운다. 상태 파일을 잃어버려도 정리된다. 한 단계가 실패해도 경고만 남기고 다음 단계로 간다. 남은 리소스가 있으면 목록을 보여 주고 종료 코드 1로 끝난다(여러 번 실행해도 안전).
 
@@ -228,7 +246,7 @@ LISTEN 0      511             [::]:80           [::]:*    users:(("nginx",pid=26
 ## 테스트
 
 ```bash
-bash tests/run.sh      # 실제 출력 마지막 줄: PASS 42 / FAIL 0
+bash tests/run.sh      # 실제 출력 마지막 줄: PASS 54 / FAIL 0
 ```
 
 `PATH` 맨 앞에 가짜 `aws`·`curl`·`ssh`([`tests/fake-bin/`](tests/fake-bin))를 넣고 스크립트를 실제로 실행한다. 가짜 명령은 호출을 한 줄씩 기록하고 정해진 ID를 돌려준다. 실제 AWS·네트워크는 부르지 않는다.
@@ -236,11 +254,11 @@ bash tests/run.sh      # 실제 출력 마지막 줄: PASS 42 / FAIL 0
 
 | 묶음 | 확인하는 것 |
 |---|---|
-| 사전 점검 (10) | 키·`.env` 누락, 루트 거부, IP 감지 실패, 서울 외 리전·프리 티어 외 유형 거부, CRLF·따옴표·주석이 있는 `.env`, 계정 ID·IP 마스킹 |
+| 사전 점검 (16) | 키·`.env` 누락, **셸에 남은 키·토큰 무시**, 루트 거부, IP 감지 실패, MY_IP 출처 로그, 서울 외 리전·허용 외 유형 거부, 프리 티어 대상 아님 경고(차단 안 함), CRLF·따옴표·주석이 있는 `.env`, bash 4 미만 거부, 계정 ID·IP 마스킹(숫자 경계) |
 | user-data (1) | 문법, `/health` 고정 응답, systemd 분기, `0.0.0.0/0` 문자열 없음 |
-| deploy (7) | 생성 순서, `0.0.0.0/0 → igw` 경로, SSH `/32`, 전체 포트 규칙 없음, 퍼블릭 IP 자동 할당, IMDSv2, Canonical AMI·gp3 8GiB, 모든 생성 호출에 태그, 서울 리전, 재실행 무변경, 중간 실패 후 이어하기, 접속 정보 출력 |
+| deploy (8) | 생성 순서, VPC·서브넷 생성 직후 조회 대기, `0.0.0.0/0 → igw` 경로, SSH `/32`, 전체 포트 규칙 없음, 퍼블릭 IP 자동 할당, IMDSv2, Canonical AMI·gp3 8GiB, 모든 생성 호출에 태그, 서울 리전, 재실행 무변경, 중간 실패 후 이어하기, 접속 정보 출력 |
 | verify (5) | `/health` 200+OK·SSH 점검 기록, 503이면 실패, 상태 없으면 안내, SSH 불가면 실패 |
-| cleanup (9) | 역순 삭제, RT 연결 해제·IGW 분리, 태그 탐색(상태 파일 없음), EIP·EBS 해제, 잔여 리소스 보고, 실패해도 계속, 두 번 실행, IP 감지 불필요, 키페어·pem·known_hosts 삭제 |
+| cleanup (14) | 역순 삭제, RT 연결 해제·IGW 분리, 태그 탐색(상태 파일 없음), 인스턴스별 종료·대기, EIP·EBS 해제, 잔여 리소스 보고, 실패해도 계속, DependencyViolation 재시도·재시도 상한, NotFound는 이미 없음, 일반 오류는 재시도 안 함, 두 번 실행, IP 감지 불필요, 키페어·pem·known_hosts 삭제 |
 | aws CLI·IAM (10) | 아키텍처별 설치 URL, `./.tools` 설치, 정책 최소권한·Deny, **스크립트의 모든 ec2 호출이 정책에 있는지**, IAM 도우미(`.env` 작성·재사용·콘솔·루트 거부) |
 
 정적 검사:
@@ -290,7 +308,7 @@ python3 -m json.tool iam/least-privilege-policy.json > /dev/null                
 
 | 제약 | 상태 | 근거 |
 |---|---|---|
-| 프리 티어 범위 (micro 1대, EBS 8GiB) | ✅ | `t3.micro`/`t2.micro`만 허용(스크립트 + IAM Deny), gp3 8GiB |
+| 프리 티어 범위 (micro 1대, EBS 8GiB) | ✅ / ⏳ 계정 확인 | `t3.micro`/`t2.micro`만 허용(스크립트 + IAM Deny), gp3 8GiB. 계정의 대상 유형은 사전 점검이 조회해 아니면 경고([확인 방법](#프리-티어-대상-인스턴스-유형-확인)) |
 | 루트 계정 사용 안 함 | ✅ | 루트 키면 `deploy.sh`·`cleanup.sh`·IAM 도우미 모두 거부 |
 | 모든 리소스 서울 리전 | ✅ | 리전 고정 + IAM 리전 조건 + 테스트가 모든 ec2 호출의 리전 확인 |
 | Ubuntu LTS, EBS 8~10GiB, 키페어 1개 안전 보관 | ✅ | Ubuntu 24.04, 8GiB, `state/b3-1-key.pem` 400·`.gitignore` |
@@ -316,7 +334,7 @@ python3 -m json.tool iam/least-privilege-policy.json > /dev/null                
 │   ├── rehearsal.sh                  로컬 리허설 (같은 user-data를 컨테이너에서)
 │   └── repro-port-blocked.sh         트러블슈팅 재현
 ├── tests/
-│   ├── run.sh                        테스트 러너 (42개)
+│   ├── run.sh                        테스트 러너 (54개)
 │   └── fake-bin/{aws,curl,ssh}       가짜 명령
 ├── docs/
 │   ├── architecture.png  make_architecture.py

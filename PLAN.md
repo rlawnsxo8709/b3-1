@@ -90,7 +90,7 @@ cleanup.sh
 
 | 단계 | 결과 |
 |---|---|
-| 가짜 명령 테스트 | `bash tests/run.sh` → `PASS 42 / FAIL 0`. 묶음마다 테스트를 먼저 쓰고 실패(RED)를 확인한 뒤 구현했다 |
+| 가짜 명령 테스트 | `bash tests/run.sh` → `PASS 42 / FAIL 0`(최초), 리뷰 후속 수정 후 `PASS 54 / FAIL 0`. 묶음마다 테스트를 먼저 쓰고 실패(RED)를 확인한 뒤 구현했다 |
 | 로컬 리허설 | `ubuntu:24.04` 컨테이너에서 같은 `user-data.sh` 실행 → 컨테이너 안 `/`·`/health` 200, 호스트 `/health`·`/` 200 (`evidence/local/rehearsal.txt`) |
 | 트러블슈팅 재현 | 포트 게시 없는 컨테이너: 호스트 `000` → 가설 3개 검증 → 포트 게시 후 `200` (`evidence/local/troubleshooting-port.txt`) |
 | 정적 검사 | `bash -n` 전체 통과, shellcheck(진입 스크립트·lib·local·user-data·IAM 도우미) 경고 0, IAM JSON 유효 |
@@ -108,3 +108,15 @@ cleanup.sh
 | 리전·유형·태그 값 검증 | (명시 없음) | `.env`의 리전이 서울이 아니거나 유형이 t2/t3.micro가 아니면 AWS 호출 전에 중단 | 미션 제약을 스크립트에서도 강제(IAM 정책과 이중 방어) |
 | IAM 도우미 `--console` | 비밀번호 생성 + 변경 강제 | AWS 관리형 `IAMUserChangePassword`도 연결 | 첫 로그인 비밀번호 변경에는 본인 비밀번호 변경 권한이 필요하다 |
 | 테스트 추가 | 계획의 16개 | 42개 — 중간 실패 후 이어하기, 스크립트의 모든 ec2 호출이 정책에 있는지, `.tools` 설치, IAM 도우미 등 | 실제 AWS에서 처음 돌 때 실패할 지점을 미리 막기 위해 |
+
+### 리뷰 후속 수정 (fix/review-feedback)
+
+| 항목 | 바꾼 내용 |
+|---|---|
+| 자격 증명 출처 | `.env` 파싱 전에 셸의 `AWS_ACCESS_KEY_ID`·`AWS_SECRET_ACCESS_KEY`·`AWS_SESSION_TOKEN`을 지운다. 키는 `.env`에서만 받는다. `MY_IP` 출처(.env/셸/자동 감지)를 로그에 정확히 적는다 |
+| bash 버전 | bash 4 미만이면 `lib/common.sh`를 읽는 순간 안내하고 종료한다(배포만 되고 정리가 안 되는 상황 방지) |
+| 인스턴스 정리 | 인스턴스별로 종료 요청·대기한다(여러 ID 중 하나가 NotFound여도 나머지를 놓치지 않음) |
+| 증거 마스킹 | 계정 ID·내 IP를 ERE 숫자 경계로 바꾼다(다른 IP의 일부를 깨뜨리지 않음) |
+| 프리 티어 유형 | 사전 점검에서 `free-tier-eligible` 조회로 선택 유형이 대상인지 확인하고, 아니면 경고만 한다(차단 안 함) |
+| 최종 일관성 | `wait vpc-exists` 후 `vpc-available`, 서브넷은 NotFound만 재시도하는 조회 루프(`wait_exists`) 후 `subnet-available`(`subnet-available` 대기는 NotFound를 만나면 바로 실패하므로) |
+| 테스트 | 회귀 테스트 12개 추가(42 → 54). 가짜 aws에 실패 주입(`FAKE_FAIL_ONCE_ON/WITH`, `FAKE_NOTFOUND_FOR`, `FAKE_FAIL_CODE`)을 넣어 cleanup의 재시도·NotFound 분기를 스위트로 검증한다 |

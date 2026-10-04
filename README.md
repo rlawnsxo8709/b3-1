@@ -11,7 +11,7 @@
 | 필요한 것 | Linux 또는 WSL의 **Bash 4 이상**(macOS 기본 bash 3.2는 안 됨 → `brew install bash` 후 `bash ./deploy.sh`), `curl`, `ssh`. aws CLI v2는 없으면 `./.tools`에 자동 설치(sudo 불필요, `unzip` 필요) |
 | 외부 접속 검증 | **방식 B — `GET http://<퍼블릭IP>/health` → 200 + `OK`** |
 
-설계 결정은 [PLAN.md](PLAN.md), 과제 목표·평가 문항 답변은 [EXPLAIN.md](EXPLAIN.md)에 있다.
+설계 결정은 [PLAN.md](PLAN.md)에 있다.
 
 ---
 
@@ -345,7 +345,7 @@ python3 -m json.tool iam/least-privilege-policy.json > /dev/null                
 │   ├── local/                        로컬 리허설·재현 실제 출력
 │   └── aws/                          ⏳ AWS 실행 시 자동 생성
 ├── state/                            (git 제외) 리소스 ID, 개인키, known_hosts
-└── README.md  PLAN.md  EXPLAIN.md
+└── README.md  PLAN.md
 ```
 
 ## 주의사항

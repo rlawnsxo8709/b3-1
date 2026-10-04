@@ -90,7 +90,7 @@ cleanup.sh
 
 | 단계 | 결과 |
 |---|---|
-| 가짜 명령 테스트 | `bash tests/run.sh` → `PASS 42 / FAIL 0`(최초), 리뷰 후속 수정 후 `PASS 54 / FAIL 0`. 묶음마다 테스트를 먼저 쓰고 실패(RED)를 확인한 뒤 구현했다 |
+| 가짜 명령 테스트 | `bash tests/run.sh` → `PASS 42 / FAIL 0`(최초), 리뷰 후속 수정 후 `PASS 54 / FAIL 0`, 2차 수정 후 `PASS 58 / FAIL 0`(bash 4.3 컨테이너에서도 동일). 묶음마다 테스트를 먼저 쓰고 실패(RED)를 확인한 뒤 구현했다 |
 | 로컬 리허설 | `ubuntu:24.04` 컨테이너에서 같은 `user-data.sh` 실행 → 컨테이너 안 `/`·`/health` 200, 호스트 `/health`·`/` 200 (`evidence/local/rehearsal.txt`) |
 | 트러블슈팅 재현 | 포트 게시 없는 컨테이너: 호스트 `000` → 가설 3개 검증 → 포트 게시 후 `200` (`evidence/local/troubleshooting-port.txt`) |
 | 정적 검사 | `bash -n` 전체 통과, shellcheck(진입 스크립트·lib·local·user-data·IAM 도우미) 경고 0, IAM JSON 유효 |
@@ -120,3 +120,12 @@ cleanup.sh
 | 프리 티어 유형 | 사전 점검에서 `free-tier-eligible` 조회로 선택 유형이 대상인지 확인하고, 아니면 경고만 한다(차단 안 함) |
 | 최종 일관성 | `wait vpc-exists` 후 `vpc-available`, 서브넷은 NotFound만 재시도하는 조회 루프(`wait_exists`) 후 `subnet-available`(`subnet-available` 대기는 NotFound를 만나면 바로 실패하므로) |
 | 테스트 | 회귀 테스트 12개 추가(42 → 54). 가짜 aws에 실패 주입(`FAKE_FAIL_ONCE_ON/WITH`, `FAKE_NOTFOUND_FOR`, `FAKE_FAIL_CODE`)을 넣어 cleanup의 재시도·NotFound 분기를 스위트로 검증한다 |
+
+### 재리뷰 후속 수정 (fix/review-feedback-2)
+
+| 항목 | 바꾼 내용 |
+|---|---|
+| 마스킹 회귀(Important) | `.env`의 `MY_IP=x.x.x.x/32`를 verify·cleanup이 정규화 없이 마스킹 sed에 넣어 sed가 깨졌다. 그 결과 cleanup이 **삭제 전에** 멈췄다. `mask_stream`이 `/32`를 떼고 IPv4일 때만 치환하게 고쳤다. 계정 ID도 12자리일 때만 치환해, 치환 결과가 다시 일치하는 무한 반복을 막았다. `sed_escape`에 `/`를 추가했다 |
+| 생성 직후 일관성 | IGW·Route Table·SG도 만든 직후 조회될 때까지 기다린다(NotFound만 재시도). 그다음 연결·경로·규칙을 추가한다 |
+| bash 4.0~4.3 | 빈 배열 확장을 `${arr[@]+"${arr[@]}"}`로 바꿨다(테스트 하네스, cleanup 루프, aws CLI 설치기). 수정 전 bash 4.3에서는 cleanup이 인스턴스 종료 전에 `eips[@]: unbound variable`로 멈췄다 |
+| 문서 | `--help`에 프리 티어 확인 설명, `ec2:CreateTags`가 `--tag-specifications`에 필요하다는 점 명시, 테스트 수 58, 코드 줄 번호 갱신 |

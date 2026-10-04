@@ -26,7 +26,8 @@ usage() {
 
   (옵션 없음)        사전 점검 → VPC·Subnet·IGW·Route Table·SG·키페어·EC2 생성
                      → /health 응답 대기 → 외부 접속 검증 → evidence/aws/에 증거 저장
-  --preflight-only   .env·aws CLI·자격 증명(루트 거부)·내 IP 확인까지만 한다. 리소스를 만들지 않는다
+  --preflight-only   .env·aws CLI·자격 증명(루트 거부)·내 IP·프리 티어 대상 유형(아니면 경고) 확인까지만 한다.
+                     리소스를 만들지 않는다
   -h, --help         이 도움말
 
 다시 실행하면 state/resources.env에 기록된 단계는 건너뛴다. 실습이 끝나면 ./cleanup.sh
@@ -51,7 +52,8 @@ expect_id() {
   fi
 }
 
-# 방금 만든 리소스가 조회될 때까지 기다린다(AWS API의 최종 일관성). NotFound만 다시 시도한다
+# 방금 만든 리소스가 조회될 때까지 기다린다(AWS API의 최종 일관성). NotFound만 다시 시도한다.
+# 생성 직후 연결·경로·규칙 추가가 "없는 ID"로 실패하지 않게 Subnet·IGW·Route Table·SG 생성 뒤에 부른다
 wait_exists() {
   local desc="$1" i err
   shift 2
@@ -152,6 +154,7 @@ step_igw() {
     expect_id igw "$IGW_ID" "Internet Gateway"
     state_set IGW_ID "$IGW_ID"
     log "IGW 생성: $IGW_ID"
+    wait_exists "Internet Gateway $IGW_ID" -- aws ec2 describe-internet-gateways --internet-gateway-ids "$IGW_ID"
   else
     log "IGW 재사용: $IGW_ID"
   fi
@@ -172,6 +175,7 @@ step_route() {
     expect_id rtb "$RT_ID" "Route Table"
     state_set RT_ID "$RT_ID"
     log "Route Table 생성: $RT_ID"
+    wait_exists "Route Table $RT_ID" -- aws ec2 describe-route-tables --route-table-ids "$RT_ID"
   else
     log "Route Table 재사용: $RT_ID"
   fi
@@ -202,6 +206,7 @@ step_sg() {
     expect_id sg "$SG_ID" "Security Group"
     state_set SG_ID "$SG_ID"
     log "Security Group 생성: $SG_ID"
+    wait_exists "Security Group $SG_ID" -- aws ec2 describe-security-groups --group-ids "$SG_ID"
   else
     log "Security Group 재사용: $SG_ID"
   fi

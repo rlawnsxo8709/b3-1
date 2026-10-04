@@ -148,19 +148,24 @@ mask_account() { printf '%s****%s' "${1:0:4}" "${1: -4}"; }
 # 203.0.113.77 → 203.0.*.*
 mask_ip() { printf '%s.*.*' "${1%.*.*}"; }
 
-# 확장 정규식(ERE)에서 글자 그대로 맞도록 특수문자를 이스케이프한다
-sed_escape() { printf '%s' "$1" | sed 's/[][\.*^$|+?(){}]/\\&/g'; }
+# 확장 정규식(ERE)에서 글자 그대로 맞도록 특수문자를 이스케이프한다(s 명령 구분자로 쓰는 / | 포함)
+sed_escape() { printf '%s' "$1" | sed 's#[][\.*^$|+?(){}/]#\\&#g'; }
 
 # 공개 저장소에 올릴 증거에서 계정 ID와 개인 IP를 가리고, 절대 경로를 프로젝트 기준 경로로 바꾼다.
 # 계정 ID·IP는 숫자 경계를 지켜 다른 값(예: 11.2.3.45)의 일부를 깨뜨리지 않고,
 # 경계 글자를 함께 소비하므로 붙어 있는 값(1.2.3.4,1.2.3.4)까지 바뀌도록 t 분기로 반복한다
 mask_stream() {
-  local args=(-E -e "s|$(sed_escape "$ROOT_DIR/")|./|g")
-  if [ -n "$ACCOUNT_ID" ]; then
-    args+=(-e ":acct" -e "s/(^|[^0-9])$(sed_escape "$ACCOUNT_ID")([^0-9]|\$)/\1$(mask_account "$ACCOUNT_ID")\2/" -e "t acct")
+  local args=(-E -e "s|$(sed_escape "$ROOT_DIR/")|./|g") ip="${MY_IP:-}"
+  # verify·cleanup은 detect_my_ip를 거치지 않으므로 .env 값(예: 1.2.3.4/32)을 여기서 정규화하고,
+  # IPv4가 아니면 치환하지 않는다(치환 결과가 다시 일치하면 t 분기가 끝나지 않는다)
+  ip="${ip%/32}"
+  is_ipv4 "$ip" || ip=""
+  # 계정 ID도 12자리 숫자일 때만 가린다(같은 이유)
+  if [[ "$ACCOUNT_ID" =~ ^[0-9]{12}$ ]]; then
+    args+=(-e ":acct" -e "s/(^|[^0-9])${ACCOUNT_ID}([^0-9]|\$)/\1$(mask_account "$ACCOUNT_ID")\2/" -e "t acct")
   fi
-  if [ -n "${MY_IP:-}" ]; then
-    args+=(-e ":ip" -e "s/(^|[^0-9.])$(sed_escape "$MY_IP")([^0-9]|\$)/\1$(mask_ip "$MY_IP")\2/" -e "t ip")
+  if [ -n "$ip" ]; then
+    args+=(-e ":ip" -e "s/(^|[^0-9.])$(sed_escape "$ip")([^0-9]|\$)/\1$(mask_ip "$ip")\2/" -e "t ip")
   fi
   sed "${args[@]}"
 }

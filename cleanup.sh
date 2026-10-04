@@ -7,6 +7,7 @@
 set -Eeuo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# 빈 배열은 ${arr[@]+"${arr[@]}"}로 펼친다. bash 4.0~4.3은 set -u에서 빈 "${arr[@]}"를 오류로 본다
 # shellcheck source=lib/common.sh
 source "$SCRIPT_DIR/lib/common.sh"
 # shellcheck source=lib/awscli.sh
@@ -105,15 +106,15 @@ clean_instances() {
   mapfile -t eips < <(aws ec2 describe-addresses \
     --filters "Name=instance-id,Values=$(IFS=,; echo "${ids[*]}")" \
     --query 'Addresses[].AllocationId' --output text 2> /dev/null | tr '\t' '\n' | grep -v -e '^$' -e '^None$' || true)
-  EXTRA_EIPS=("${eips[@]}")
+  EXTRA_EIPS=(${eips[@]+"${eips[@]}"})
   # 인스턴스마다 따로 부른다. 여러 ID를 한 번에 넘기면 하나만 이미 없어도(NotFound) 호출 전체가 실패해
   # 나머지가 살아 있는데도 "이미 없음"으로 오판한다
   local id
-  for id in "${ids[@]}"; do
+  for id in ${ids[@]+"${ids[@]}"}; do
     try "EC2 종료 요청 $id" -- aws ec2 terminate-instances --instance-ids "$id"
   done
   # 종료 요청을 모두 보낸 뒤 하나씩 기다린다(종료는 동시에 진행된다)
-  for id in "${ids[@]}"; do
+  for id in ${ids[@]+"${ids[@]}"}; do
     try "EC2 terminated 대기 $id" -- aws ec2 wait instance-terminated --instance-ids "$id"
   done
 }
@@ -127,7 +128,7 @@ clean_volumes() {
   if [ "${#ids[@]}" -eq 0 ]; then
     evidence_note "$EVIDENCE" "→ 대상 없음"
   fi
-  for v in "${ids[@]}"; do
+  for v in ${ids[@]+"${ids[@]}"}; do
     try "EBS 삭제 $v" -- aws ec2 delete-volume --volume-id "$v"
   done
 }
@@ -137,12 +138,12 @@ clean_addresses() {
   local ids=() a assoc
   mapfile -t ids < <({
     ids_of - -- aws ec2 describe-addresses --filters "$TAG_FILTER" --query 'Addresses[].AllocationId' --output text
-    printf '%s\n' "${EXTRA_EIPS[@]}"
+    printf '%s\n' ${EXTRA_EIPS[@]+"${EXTRA_EIPS[@]}"}
   } | grep -v '^$' | sort -u || true)
   if [ "${#ids[@]}" -eq 0 ]; then
     evidence_note "$EVIDENCE" "→ 대상 없음"
   fi
-  for a in "${ids[@]}"; do
+  for a in ${ids[@]+"${ids[@]}"}; do
     assoc="$(aws ec2 describe-addresses --allocation-ids "$a" \
       --query 'Addresses[0].AssociationId' --output text 2> /dev/null)" || assoc=""
     if [ -n "$assoc" ] && [ "$assoc" != "None" ]; then
@@ -160,7 +161,7 @@ clean_security_groups() {
   if [ "${#ids[@]}" -eq 0 ]; then
     evidence_note "$EVIDENCE" "→ 대상 없음"
   fi
-  for g in "${ids[@]}"; do
+  for g in ${ids[@]+"${ids[@]}"}; do
     try "SG 삭제 $g" -- aws ec2 delete-security-group --group-id "$g"
   done
 }
@@ -173,7 +174,7 @@ clean_route_tables() {
   if [ "${#ids[@]}" -eq 0 ]; then
     evidence_note "$EVIDENCE" "→ 대상 없음"
   fi
-  for rt in "${ids[@]}"; do
+  for rt in ${ids[@]+"${ids[@]}"}; do
     # 메인 라우트 테이블 연결(Main=true)은 해제할 수 없으므로 서브넷 연결만 고른다
     # shellcheck disable=SC2016 # 백틱은 셸 치환이 아니라 JMESPath 리터럴이다
     mapfile -t assocs < <({
@@ -182,7 +183,7 @@ clean_route_tables() {
         --query 'RouteTables[0].Associations[?Main==`false`].RouteTableAssociationId' \
         --output text 2> /dev/null || true
     } | tr '\t' '\n' | grep -v -e '^$' -e '^None$' | sort -u || true)
-    for a in "${assocs[@]}"; do
+    for a in ${assocs[@]+"${assocs[@]}"}; do
       try "Route Table 연결 해제 $a" -- aws ec2 disassociate-route-table --association-id "$a"
     done
     try "Route Table 삭제 $rt" -- aws ec2 delete-route-table --route-table-id "$rt"
@@ -197,11 +198,11 @@ clean_internet_gateways() {
   if [ "${#ids[@]}" -eq 0 ]; then
     evidence_note "$EVIDENCE" "→ 대상 없음"
   fi
-  for igw in "${ids[@]}"; do
+  for igw in ${ids[@]+"${ids[@]}"}; do
     mapfile -t vpcs < <(aws ec2 describe-internet-gateways --internet-gateway-ids "$igw" \
       --query 'InternetGateways[0].Attachments[].VpcId' --output text 2> /dev/null |
       tr '\t' '\n' | grep -v -e '^$' -e '^None$' || true)
-    for v in "${vpcs[@]}"; do
+    for v in ${vpcs[@]+"${vpcs[@]}"}; do
       try "IGW 분리 $igw ← $v" -- aws ec2 detach-internet-gateway --internet-gateway-id "$igw" --vpc-id "$v"
     done
     try "IGW 삭제 $igw" -- aws ec2 delete-internet-gateway --internet-gateway-id "$igw"
@@ -213,7 +214,7 @@ clean_subnets_and_vpcs() {
   local ids=() s v
   mapfile -t ids < <(ids_of SUBNET_ID -- aws ec2 describe-subnets \
     --filters "$TAG_FILTER" --query 'Subnets[].SubnetId' --output text)
-  for s in "${ids[@]}"; do
+  for s in ${ids[@]+"${ids[@]}"}; do
     try "Subnet 삭제 $s" -- aws ec2 delete-subnet --subnet-id "$s"
   done
   mapfile -t ids < <(ids_of VPC_ID -- aws ec2 describe-vpcs \
@@ -221,7 +222,7 @@ clean_subnets_and_vpcs() {
   if [ "${#ids[@]}" -eq 0 ]; then
     evidence_note "$EVIDENCE" "→ VPC 대상 없음"
   fi
-  for v in "${ids[@]}"; do
+  for v in ${ids[@]+"${ids[@]}"}; do
     try "VPC 삭제 $v" -- aws ec2 delete-vpc --vpc-id "$v"
   done
 }
@@ -234,7 +235,7 @@ clean_key_pairs() {
   if [ "${#names[@]}" -eq 0 ]; then
     evidence_note "$EVIDENCE" "→ 대상 없음"
   fi
-  for k in "${names[@]}"; do
+  for k in ${names[@]+"${names[@]}"}; do
     try "키페어 삭제 $k" -- aws ec2 delete-key-pair --key-name "$k"
     # AWS 쪽 키페어가 지워졌을 때만 개인키를 지운다(남아 있다면 개인키가 아직 쓸모 있다)
     if [ "$LAST_OK" = 1 ]; then
@@ -339,11 +340,11 @@ main() {
   local item
   if [ "${#LEFTOVERS[@]}" -gt 0 ]; then
     warn "남은 리소스가 있습니다:"
-    for item in "${LEFTOVERS[@]}"; do warn "  - $item"; done
+    for item in ${LEFTOVERS[@]+"${LEFTOVERS[@]}"}; do warn "  - $item"; done
   fi
   if [ "${#FAILED_STEPS[@]}" -gt 0 ]; then
     warn "실패한 단계:"
-    for item in "${FAILED_STEPS[@]}"; do warn "  - $item"; done
+    for item in ${FAILED_STEPS[@]+"${FAILED_STEPS[@]}"}; do warn "  - $item"; done
   fi
   evidence_note "$EVIDENCE" "종합: 남은 리소스 ${#LEFTOVERS[@]}종 / 실패 단계 ${#FAILED_STEPS[@]}개 — 정리 미완료"
   die "정리를 마치지 못했습니다(남은 리소스 ${#LEFTOVERS[@]}종, 실패 단계 ${#FAILED_STEPS[@]}개). 잠시 뒤 ./cleanup.sh를 다시 실행하고, 그래도 남으면 콘솔에서 확인하세요. 상태 파일은 그대로 둡니다."

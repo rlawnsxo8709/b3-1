@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# 테스트용 가짜 ssh — 원격 명령 문자열을 "$FAKE_LOG"에 남기고
+# systemctl is-active / curl localhost / curl https://example.com 결과를 차례로 흉내 낸다.
+#   FAKE_SSH_FAIL=1  접속 실패(exit 255)
+printf 'ssh %s\n' "$*" >> "${FAKE_LOG:-/dev/null}"
+if [ "${FAKE_SSH_FAIL:-0}" = 1 ]; then
+  echo "ssh: connect to host 203.0.113.10 port 22: Connection timed out" >&2
+  exit 255
+fi
+printf 'active\n200\n200\n'

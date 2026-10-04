@@ -1,0 +1,121 @@
+#!/usr/bin/env bash
+# 테스트용 가짜 aws — 실제 AWS를 호출하지 않는다.
+# 모든 호출을 "$FAKE_LOG"에 "aws <인자> region=<AWS_DEFAULT_REGION>" 한 줄로 남기고
+# 서비스·작업 이름에 따라 정해진 값을 출력한다.
+#
+#   FAKE_ROOT=1       sts get-caller-identity가 루트 ARN을 돌려준다
+#   FAKE_DISCOVER=1   tag:Project 필터 조회가 가짜 ID를 돌려준다.
+#                     같은 종류의 delete 호출이 이미 로그에 있으면 빈 출력(=삭제됨)
+#   FAKE_LEFTOVER=1   tag:Project 필터 조회가 삭제 뒤에도 가짜 ID를 돌려준다(잔여 리소스)
+#   FAKE_FAIL_ON=op   해당 작업(예: create-security-group)을 AWS 오류처럼 실패시킨다(exit 254)
+#   FAKE_IAM_USER_EXISTS=1 / FAKE_IAM_POLICY_EXISTS=1  iam get-user / get-policy 성공
+set -u
+log="${FAKE_LOG:-/dev/null}"
+printf 'aws %s region=%s\n' "$*" "${AWS_DEFAULT_REGION:-unset}" >> "$log"
+
+if [ "${1:-}" = "--version" ]; then
+  echo "aws-cli/2.99.0-fake Python/3.12 Linux/fake"
+  exit 0
+fi
+
+svc="${1:-}"
+op="${2:-}"
+query=""
+tag_filter=0
+prev=""
+for a in "$@"; do
+  [ "$prev" = "--query" ] && query="$a"
+  case "$a" in *tag:Project*) tag_filter=1 ;; esac
+  prev="$a"
+done
+
+if [ -n "${FAKE_FAIL_ON:-}" ] && [ "$op" = "$FAKE_FAIL_ON" ]; then
+  echo "An error occurred (FakeFailure) when calling the ${op} operation: 테스트용 실패 (FAKE_FAIL_ON)" >&2
+  exit 254
+fi
+
+# 태그 조회 결과: 잔여 모드면 항상, 탐색 모드면 삭제 호출 전까지만 ID를 돌려준다
+tagged() {
+  local id="$1" delete_op="$2"
+  if [ "${FAKE_LEFTOVER:-0}" = 1 ]; then
+    echo "$id"
+  elif [ "${FAKE_DISCOVER:-0}" = 1 ] && ! grep -qF -- " $delete_op " "$log"; then
+    echo "$id"
+  fi
+  return 0
+}
+
+case "$svc $op" in
+  "sts get-caller-identity")
+    # 실제 AWS처럼 형식이 깨진 키(따옴표·공백·CR 포함)는 거부한다
+    if ! [[ "${AWS_ACCESS_KEY_ID:-}" =~ ^(AKIA|ASIA)[A-Z0-9]{16}$ ]] ||
+       ! [[ "${AWS_SECRET_ACCESS_KEY:-}" =~ ^[A-Za-z0-9/+]+$ ]]; then
+      echo "An error occurred (InvalidClientTokenId) when calling the GetCallerIdentity operation: The security token included in the request is invalid." >&2
+      exit 254
+    fi
+    if [ "${FAKE_ROOT:-0}" = 1 ]; then
+      echo "arn:aws:iam::123456789012:root"
+    else
+      echo "arn:aws:iam::123456789012:user/b3-1-operator"
+    fi
+    ;;
+  "ec2 create-vpc") echo "vpc-0fake" ;;
+  "ec2 create-subnet") echo "subnet-0fake" ;;
+  "ec2 create-internet-gateway") echo "igw-0fake" ;;
+  "ec2 create-route-table") echo "rtb-0fake" ;;
+  "ec2 associate-route-table") echo "rtbassoc-0fake" ;;
+  "ec2 create-security-group") echo "sg-0fake" ;;
+  "ec2 create-key-pair")
+    printf -- '-----BEGIN OPENSSH PRIVATE KEY-----\nFAKE\n-----END OPENSSH PRIVATE KEY-----\n'
+    ;;
+  "ec2 describe-instance-types") echo "x86_64" ;;
+  "ec2 describe-images") echo "ami-0fake" ;;
+  "ec2 run-instances") echo "i-0fake" ;;
+  "ec2 describe-instances")
+    if [[ "$query" == *PublicIpAddress* ]]; then
+      echo "203.0.113.10"
+    elif [ "$tag_filter" = 1 ]; then
+      tagged "i-0fake" "terminate-instances"
+    fi
+    ;;
+  "ec2 describe-vpcs") [ "$tag_filter" = 1 ] && tagged "vpc-0fake" "delete-vpc" ;;
+  "ec2 describe-subnets") [ "$tag_filter" = 1 ] && tagged "subnet-0fake" "delete-subnet" ;;
+  "ec2 describe-security-groups") [ "$tag_filter" = 1 ] && tagged "sg-0fake" "delete-security-group" ;;
+  "ec2 describe-volumes") [ "$tag_filter" = 1 ] && tagged "vol-0fake" "delete-volume" ;;
+  "ec2 describe-addresses") [ "$tag_filter" = 1 ] && tagged "eipalloc-0fake" "release-address" ;;
+  "ec2 describe-key-pairs") [ "$tag_filter" = 1 ] && tagged "b3-1-key" "delete-key-pair" ;;
+  "ec2 describe-internet-gateways")
+    if [ "$tag_filter" = 1 ]; then
+      tagged "igw-0fake" "delete-internet-gateway"
+    elif [[ "$query" == *Attachments* ]]; then
+      echo "vpc-0fake"
+    fi
+    ;;
+  "ec2 describe-route-tables")
+    if [ "$tag_filter" = 1 ]; then
+      tagged "rtb-0fake" "delete-route-table"
+    elif [[ "$query" == *Associations* ]]; then
+      echo "rtbassoc-0fake"
+    fi
+    ;;
+  "iam get-user")
+    if [ "${FAKE_IAM_USER_EXISTS:-0}" = 1 ]; then
+      echo "b3-1-operator"
+    else
+      echo "An error occurred (NoSuchEntity) when calling the GetUser operation: The user cannot be found." >&2
+      exit 254
+    fi
+    ;;
+  "iam get-policy")
+    if [ "${FAKE_IAM_POLICY_EXISTS:-0}" = 1 ]; then
+      echo "arn:aws:iam::123456789012:policy/b3-1-least-privilege"
+    else
+      echo "An error occurred (NoSuchEntity) when calling the GetPolicy operation: Policy does not exist." >&2
+      exit 254
+    fi
+    ;;
+  "iam create-policy") echo "arn:aws:iam::123456789012:policy/b3-1-least-privilege" ;;
+  "iam create-access-key") printf 'AKIAFAKEOPERATOR0001\tfakeOperatorSecret/abc+123\n' ;;
+  *) : ;; # 그 밖의 create-*·delete-*·wait·modify-*·authorize-*·attach-*·detach-* 등은 출력 없이 성공
+esac
+exit 0

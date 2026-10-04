@@ -49,7 +49,7 @@ ensure_awscli() {
     update=(--update)
   fi
   mkdir -p "$AWSCLI_TOOLS_DIR"
-  if ! "$tmp/aws/install" -i "$AWSCLI_TOOLS_DIR/aws-cli" -b "$AWSCLI_TOOLS_DIR/bin" "${update[@]}" > /dev/null; then
+  if ! "$tmp/aws/install" -i "$AWSCLI_TOOLS_DIR/aws-cli" -b "$AWSCLI_TOOLS_DIR/bin" ${update[@]+"${update[@]}"} > /dev/null; then
     rm -rf "$tmp"
     die "aws CLI 설치에 실패했습니다. .tools/ 폴더를 지우고 다시 실행하거나 직접 설치하세요."
   fi

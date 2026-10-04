@@ -120,12 +120,12 @@ Elastic IP·NAT Gateway·ELB·RDS는 만들지 않는다.
 | Statement | 효과 | 내용 |
 |---|---|---|
 | `ReadOnlyDescribe` | Allow | `ec2:Describe*` — 조회와 waiter(`wait instance-running` 등) |
-| `LabLifecycle` | Allow | VPC·Subnet·IGW·Route Table·SG·키페어·인스턴스의 생성/연결/삭제와 `CreateTags`, 정리용 `DeleteVolume`·`DisassociateAddress`·`ReleaseAddress` |
+| `LabLifecycle` | Allow | VPC·Subnet·IGW·Route Table·SG·키페어·인스턴스의 생성/연결/삭제와 `CreateTags`(직접 부르지 않지만 `--tag-specifications`로 생성 시 태그를 달 때 필요), 정리용 `DeleteVolume`·`DisassociateAddress`·`ReleaseAddress` |
 | 두 Allow 공통 | 조건 | `aws:RequestedRegion = ap-northeast-2` — 다른 리전에서는 아무것도 못 한다 |
 | `DenyNonFreeTierTypes` | Deny | `t2.micro`·`t3.micro`가 아닌 유형으로 `RunInstances` 금지 |
 
 **들어 있지 않은 것**: S3·RDS·IAM·ELB 등 EC2 밖의 모든 서비스, `ec2:*`, EIP 할당(`AllocateAddress`), NAT Gateway 생성. `sts:GetCallerIdentity`는 권한 없이 항상 호출할 수 있어 넣지 않았다.
-테스트 `test_iam_policy_covers_every_ec2_call_in_scripts`가 세 스크립트에 나오는 모든 `aws ec2 <작업>`이 이 정책으로 허용되는지 대조한다(빠진 권한을 잡는 검사다). 스크립트가 쓰지 않는 권한은 정책에 넣지 않았다. 단 하나의 예외는 `ec2:RevokeSecurityGroupIngress`다. 내 IP가 바뀌었을 때 이전 SSH 규칙을 손으로 지우는 데 쓴다([troubleshooting.md의 SSH 허용 IP 갱신](docs/troubleshooting.md#ssh-허용-ip-갱신)).
+테스트 `test_iam_policy_covers_every_ec2_call_in_scripts`가 세 스크립트에 나오는 모든 `aws ec2 <작업>`이 이 정책으로 허용되는지 대조한다(빠진 권한을 잡는 검사다). 스크립트가 쓰지 않는 권한은 정책에 넣지 않았다. 직접 호출하지 않는데 들어 있는 것은 두 개뿐이다. `ec2:CreateTags`는 생성 호출의 `--tag-specifications`(생성 시 태그)에 필요하다. `ec2:RevokeSecurityGroupIngress`는 내 IP가 바뀌었을 때 이전 SSH 규칙을 손으로 지우는 데 쓴다([troubleshooting.md의 SSH 허용 IP 갱신](docs/troubleshooting.md#ssh-허용-ip-갱신)).
 
 ### IAM 사용자 만들기
 
@@ -190,7 +190,7 @@ aws ec2 describe-instance-types --region ap-northeast-2 \
 ### 재실행과 실패 시 동작
 
 - 각 단계는 만든 리소스 ID를 **즉시** `state/resources.env`에 적는다. 다시 실행하면 이미 끝난 단계(생성·연결·규칙 추가)는 건너뛰고 이어서 진행한다.
-- 방금 만든 VPC·서브넷은 조회될 때까지 기다린 뒤 다음 단계로 간다(`wait vpc-exists`, 서브넷은 NotFound 재시도). AWS API의 최종 일관성 때문에 생성 직후 잠깐 "없음"이 나올 수 있기 때문이다.
+- 방금 만든 VPC·서브넷·IGW·Route Table·SG는 조회될 때까지 기다린 뒤 다음 단계(연결·경로·규칙 추가)로 간다(`wait vpc-exists`, 나머지는 NotFound만 재시도하는 조회). AWS API의 최종 일관성 때문에 생성 직후 잠깐 "없음"이 나올 수 있기 때문이다.
 - 실패하면 `[ERROR] 단계 실패: <단계>. 원인을 고친 뒤 ./deploy.sh를 다시 실행하면 이어서 진행합니다. 정리는 ./cleanup.sh`가 나온다.
 - `cleanup.sh`는 상태 파일 값과 `Project=b3-1` 태그 조회 결과를 **합쳐** 지운다. 상태 파일을 잃어버려도 정리된다. 한 단계가 실패해도 경고만 남기고 다음 단계로 간다. 남은 리소스가 있으면 목록을 보여 주고 종료 코드 1로 끝난다(여러 번 실행해도 안전).
 
@@ -246,19 +246,20 @@ LISTEN 0      511             [::]:80           [::]:*    users:(("nginx",pid=26
 ## 테스트
 
 ```bash
-bash tests/run.sh      # 실제 출력 마지막 줄: PASS 54 / FAIL 0
+bash tests/run.sh      # 실제 출력 마지막 줄: PASS 58 / FAIL 0 (bash 5.2, bash 4.3 컨테이너 모두)
 ```
 
 `PATH` 맨 앞에 가짜 `aws`·`curl`·`ssh`([`tests/fake-bin/`](tests/fake-bin))를 넣고 스크립트를 실제로 실행한다. 가짜 명령은 호출을 한 줄씩 기록하고 정해진 ID를 돌려준다. 실제 AWS·네트워크는 부르지 않는다.
 테스트마다 프로젝트 사본(임시 폴더)에서 돌기 때문에 내 `.env`·`state/`·`evidence/aws/`를 건드리지 않는다.
+최소 요구 버전 확인을 위해 `bash:4.3` Docker 이미지에서도 전체 스위트를 돌려 같은 결과를 얻었다(bash 4.0~4.3은 `set -u`에서 빈 배열 확장을 오류로 보므로 `${arr[@]+"${arr[@]}"}`로 펼친다).
 
 | 묶음 | 확인하는 것 |
 |---|---|
-| 사전 점검 (16) | 키·`.env` 누락, **셸에 남은 키·토큰 무시**, 루트 거부, IP 감지 실패, MY_IP 출처 로그, 서울 외 리전·허용 외 유형 거부, 프리 티어 대상 아님 경고(차단 안 함), CRLF·따옴표·주석이 있는 `.env`, bash 4 미만 거부, 계정 ID·IP 마스킹(숫자 경계) |
+| 사전 점검·마스킹 (17) | 키·`.env` 누락, **셸에 남은 키·토큰 무시**, 루트 거부, IP 감지 실패, MY_IP 출처 로그, 서울 외 리전·허용 외 유형 거부, 프리 티어 대상 아님 경고(차단 안 함), CRLF·따옴표·주석이 있는 `.env`, bash 4 미만 거부, 계정 ID·IP 마스킹(숫자 경계, `MY_IP=x.x.x.x/32` 정규화, IP가 아닌 값에서도 무한 반복 없음) |
 | user-data (1) | 문법, `/health` 고정 응답, systemd 분기, `0.0.0.0/0` 문자열 없음 |
-| deploy (8) | 생성 순서, VPC·서브넷 생성 직후 조회 대기, `0.0.0.0/0 → igw` 경로, SSH `/32`, 전체 포트 규칙 없음, 퍼블릭 IP 자동 할당, IMDSv2, Canonical AMI·gp3 8GiB, 모든 생성 호출에 태그, 서울 리전, 재실행 무변경, 중간 실패 후 이어하기, 접속 정보 출력 |
+| deploy (10) | 생성 순서, VPC·서브넷·IGW·Route Table·SG 생성 직후 조회 대기, `--help` 내용, `0.0.0.0/0 → igw` 경로, SSH `/32`, 전체 포트 규칙 없음, 퍼블릭 IP 자동 할당, IMDSv2, Canonical AMI·gp3 8GiB, 모든 생성 호출에 태그, 서울 리전, 재실행 무변경, 중간 실패 후 이어하기, 접속 정보 출력 |
 | verify (5) | `/health` 200+OK·SSH 점검 기록, 503이면 실패, 상태 없으면 안내, SSH 불가면 실패 |
-| cleanup (14) | 역순 삭제, RT 연결 해제·IGW 분리, 태그 탐색(상태 파일 없음), 인스턴스별 종료·대기, EIP·EBS 해제, 잔여 리소스 보고, 실패해도 계속, DependencyViolation 재시도·재시도 상한, NotFound는 이미 없음, 일반 오류는 재시도 안 함, 두 번 실행, IP 감지 불필요, 키페어·pem·known_hosts 삭제 |
+| cleanup (15) | `MY_IP=/32`에서도 deploy→verify→cleanup 끝까지 진행, 역순 삭제, RT 연결 해제·IGW 분리, 태그 탐색(상태 파일 없음), 인스턴스별 종료·대기, EIP·EBS 해제, 잔여 리소스 보고, 실패해도 계속, DependencyViolation 재시도·재시도 상한, NotFound는 이미 없음, 일반 오류는 재시도 안 함, 두 번 실행, IP 감지 불필요, 키페어·pem·known_hosts 삭제 |
 | aws CLI·IAM (10) | 아키텍처별 설치 URL, `./.tools` 설치, 정책 최소권한·Deny, **스크립트의 모든 ec2 호출이 정책에 있는지**, IAM 도우미(`.env` 작성·재사용·콘솔·루트 거부) |
 
 정적 검사:
@@ -334,7 +335,7 @@ python3 -m json.tool iam/least-privilege-policy.json > /dev/null                
 │   ├── rehearsal.sh                  로컬 리허설 (같은 user-data를 컨테이너에서)
 │   └── repro-port-blocked.sh         트러블슈팅 재현
 ├── tests/
-│   ├── run.sh                        테스트 러너 (54개)
+│   ├── run.sh                        테스트 러너 (58개)
 │   └── fake-bin/{aws,curl,ssh}       가짜 명령
 ├── docs/
 │   ├── architecture.png  make_architecture.py

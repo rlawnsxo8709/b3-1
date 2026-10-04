@@ -40,6 +40,11 @@ assert_not_contains() {
   [[ "$1" != *"$2"* ]] || fail "'$2' 이(가) 있으면 안 됨"
 }
 
+# 가짜 명령 로그에서 B가 처음 나오기 전까지 A가 나온 줄 수
+lines_before() {
+  awk -v a="$1" -v b="$2" 'index($0, b) { exit } index($0, a) { n++ } END { print n + 0 }' "$FAKE_LOG"
+}
+
 # 가짜 명령 로그에서 A가 처음 나온 줄이 B가 처음 나온 줄보다 앞서야 한다
 assert_order() {
   local a b
@@ -88,7 +93,7 @@ run_in_sandbox_env() {
     -u MY_IP -u INSTANCE_TYPE -u AZ -u PROJECT \
     PATH="$SANDBOX/tests/fake-bin:$PATH" FAKE_LOG="$FAKE_LOG" \
     VERIFY_WAIT_INTERVAL=0 CLEANUP_RETRY_SLEEP=0 DEPLOY_EXISTS_SLEEP=0 \
-    "${assigns[@]}" timeout 120 "$@" 2>&1)"
+    ${assigns[@]+"${assigns[@]}"} timeout 120 "$@" 2>&1)"
   RC=$?
 }
 
@@ -591,6 +596,56 @@ test_cleanup_does_not_retry_other_errors() {
   setup_sandbox; write_env; run_in_sandbox ./deploy.sh; : > "$FAKE_LOG"
   FAKE_FAIL_ON=delete-vpc run_in_sandbox ./cleanup.sh; assert_exit 1
   [ "$(grep -c ' delete-vpc ' "$FAKE_LOG")" -eq 1 ] || fail "일반 오류를 재시도함"
+}
+
+# ---------------------------------------------------------------- Fix round 2: 재리뷰 후속 회귀 테스트
+
+# [1] .env의 MY_IP=x.x.x.x/32(허용 형식)가 마스킹 sed를 깨뜨려 cleanup이 삭제 전에 멈추면 안 된다
+test_full_flow_survives_my_ip_with_cidr_suffix() {
+  setup_sandbox; write_env; echo "MY_IP=203.0.113.5/32" >> "$SANDBOX/.env"
+  run_in_sandbox ./deploy.sh; assert_exit 0
+  run_in_sandbox ./verify.sh; assert_exit 0; assert_not_contains "$OUT" "sed:"
+  : > "$FAKE_LOG"; run_in_sandbox ./cleanup.sh; assert_exit 0; assert_not_contains "$OUT" "sed:"
+  assert_contains "$(cat "$FAKE_LOG")" "delete-vpc --vpc-id vpc-0fake"
+  assert_contains "$(cat "$SANDBOX/evidence/aws/05-cleanup.txt")" "잔여 리소스 0건"
+  local E; E="$(cat "$SANDBOX/evidence/aws/00-identity.txt")"
+  assert_contains "$E" "203.0.*.*/32"; assert_not_contains "$E" "203.0.113.5"
+}
+
+# [1] IP가 아닌 MY_IP·12자리가 아닌 계정 ID에도 마스킹이 무한 반복하지 않고 끝나야 한다
+test_mask_stream_terminates_on_invalid_values() {
+  local out rc=0
+  out="$(timeout 5 bash -c 'source lib/common.sh; MY_IP=abc; ACCOUNT_ID=12; printf "%s\n" "xabc 12 yy" | mask_stream' 2>&1)" || rc=$?
+  [ "$rc" -eq 0 ] || fail "mask_stream이 끝나지 않거나 실패함(코드 $rc)"
+  assert_contains "$out" "xabc 12 yy"
+  out="$(timeout 5 bash -c 'source lib/common.sh; MY_IP=203.0.113.5/32; printf "%s\n" "src 203.0.113.5/32" | mask_stream' 2>&1)" || rc=$?
+  [ "$rc" -eq 0 ] || fail "MY_IP=/32에서 mask_stream 실패(코드 $rc)"
+  assert_contains "$out" "src 203.0.*.*/32"
+}
+
+# [2] 도움말이 --preflight-only의 프리 티어 확인을 설명한다
+test_deploy_help_mentions_free_tier_check() {
+  setup_sandbox; run_in_sandbox ./deploy.sh --help; assert_exit 0
+  assert_contains "$OUT" "--preflight-only"; assert_contains "$OUT" "프리 티어"
+}
+
+# [4] 방금 만든 IGW·Route Table·SG가 조회될 때까지 기다린 뒤 연결·경로·규칙을 추가한다
+test_deploy_waits_for_new_igw_route_table_and_sg() {
+  setup_sandbox; write_env
+  FAKE_FAIL_ONCE_ON=describe-internet-gateways FAKE_FAIL_ONCE_WITH=InvalidInternetGatewayID.NotFound run_in_sandbox ./deploy.sh
+  assert_exit 0; assert_not_contains "$OUT" "단계 실패"
+  [ "$(lines_before "describe-internet-gateways --internet-gateway-ids igw-0fake" "attach-internet-gateway")" -ge 2 ] ||
+    fail "IGW: NotFound 뒤 다시 조회하고 연결해야 함"
+  setup_sandbox; write_env
+  FAKE_FAIL_ONCE_ON=describe-route-tables FAKE_FAIL_ONCE_WITH=InvalidRouteTableID.NotFound run_in_sandbox ./deploy.sh
+  assert_exit 0; assert_not_contains "$OUT" "단계 실패"
+  [ "$(lines_before "describe-route-tables --route-table-ids rtb-0fake" "create-route ")" -ge 2 ] ||
+    fail "Route Table: NotFound 뒤 다시 조회하고 경로를 추가해야 함"
+  setup_sandbox; write_env
+  FAKE_FAIL_ONCE_ON=describe-security-groups FAKE_FAIL_ONCE_WITH=InvalidGroup.NotFound run_in_sandbox ./deploy.sh
+  assert_exit 0; assert_not_contains "$OUT" "단계 실패"
+  [ "$(lines_before "describe-security-groups --group-ids sg-0fake" "authorize-security-group-ingress")" -ge 2 ] ||
+    fail "SG: NotFound 뒤 다시 조회하고 규칙을 추가해야 함"
 }
 
 # ---------------------------------------------------------------- 실행

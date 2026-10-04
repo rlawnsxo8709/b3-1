@@ -119,7 +119,9 @@ OK
 
 - 네트워크 ACL은 이 구성에서 기본값(전체 허용)을 바꾸지 않았다. 1~3이 정상인데도 막히면 `aws ec2 describe-network-acls --filters Name=association.subnet-id,Values=<SUBNET_ID>`로 확인한다.
 - SSH가 안 돼서 4단계를 못 볼 때는 EC2 콘솔의 **인스턴스 → 작업 → 모니터링 및 문제 해결 → 시스템 로그 가져오기**로 부팅 로그를 본다. CLI(`aws ec2 get-console-output`)는 `ec2:GetConsoleOutput` 권한이 필요하다. 이 권한은 최소권한 정책에 넣지 않았으므로, 필요할 때 관리자가 그 액션만 추가한다.
-- `verify.sh`의 결과 표는 이 순서를 반영한다. 외부 `/health`가 실패하고 SSH는 성공하면 4단계(프로세스)가 원인이다. 둘 다 실패하면 1~3단계(경로)가 원인이다.
+- `verify.sh` 결과 표로 단계를 좁힌다.
+  - **외부 `/health` 실패 + SSH 성공**: SSH 패킷이 같은 IGW·라우트·퍼블릭 IP로 오갔으므로 1·3단계는 정상이다. 원인은 **SG의 80 규칙(2단계) 또는 Nginx 프로세스(4단계)** 다. 결과 표의 `인스턴스 안 curl http://localhost` 행(또는 SSH로 들어가 `curl -i http://localhost/health`)으로 가른다. 안에서 200이면 서버는 정상이니 SG 80 규칙을 보고, 안에서도 실패하면 4단계(프로세스·로그)를 본다.
+  - **외부 `/health`와 SSH 모두 실패**: 1~3단계(라우팅·퍼블릭 IP)나 SG 22 규칙(지금 내 IP인지)부터 본다.
 
 ---
 

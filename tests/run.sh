@@ -71,13 +71,24 @@ write_env() {
 
 # 사본에서 명령을 실행한다. 호스트의 AWS 관련 환경변수는 지우고 가짜 명령을 PATH 앞에 둔다
 run_in_sandbox() {
+  run_in_sandbox_env -- "$@"
+}
+
+# run_in_sandbox_env 이름=값... -- 명령... : 사용자의 셸에 export된 변수가 있는 상황을 흉내 낸다
+run_in_sandbox_env() {
+  local assigns=()
+  while [ "$1" != "--" ]; do
+    assigns+=("$1")
+    shift
+  done
+  shift
   OUT="$(cd "$SANDBOX" && env \
     -u AWS_ACCESS_KEY_ID -u AWS_SECRET_ACCESS_KEY -u AWS_SESSION_TOKEN \
     -u AWS_PROFILE -u AWS_DEFAULT_PROFILE -u AWS_REGION -u AWS_DEFAULT_REGION \
     -u MY_IP -u INSTANCE_TYPE -u AZ -u PROJECT \
     PATH="$SANDBOX/tests/fake-bin:$PATH" FAKE_LOG="$FAKE_LOG" \
-    VERIFY_WAIT_INTERVAL=0 CLEANUP_RETRY_SLEEP=0 \
-    timeout 120 "$@" 2>&1)"
+    VERIFY_WAIT_INTERVAL=0 CLEANUP_RETRY_SLEEP=0 DEPLOY_EXISTS_SLEEP=0 \
+    "${assigns[@]}" timeout 120 "$@" 2>&1)"
   RC=$?
 }
 
@@ -476,6 +487,110 @@ test_create_iam_user_needs_admin_credentials_and_rejects_root() {
   FAKE_ROOT=1 ADMIN_AWS_ACCESS_KEY_ID=AKIAADMINADMINADMIN1 ADMIN_AWS_SECRET_ACCESS_KEY=adminSecret \
     run_in_sandbox ./iam/create-iam-user.sh; assert_exit 1
   assert_contains "$OUT" "루트"; assert_not_contains "$(cat "$FAKE_LOG")" "iam create-user"
+}
+
+# ---------------------------------------------------------------- Fix round 1: 리뷰 후속 회귀 테스트
+
+# [1] 셸에 남은 키가 .env를 대신하면 안 된다(다른 계정·루트 키가 조용히 쓰이는 사고 방지)
+test_shell_exported_keys_do_not_replace_empty_env_keys() {
+  setup_sandbox; printf 'AWS_ACCESS_KEY_ID=\nAWS_SECRET_ACCESS_KEY=\n' > "$SANDBOX/.env"
+  run_in_sandbox_env AWS_ACCESS_KEY_ID=AKIASHELLSHELLSHELL1 AWS_SECRET_ACCESS_KEY=shellSecret -- ./deploy.sh
+  assert_exit 1; assert_contains "$OUT" "AWS_ACCESS_KEY_ID"
+  assert_not_contains "$(cat "$FAKE_LOG" 2>/dev/null)" "aws "
+}
+
+# [1] 셸에 남은 임시 토큰이 .env의 영구 키와 섞이면 AWS가 거부한다
+test_shell_session_token_does_not_mix_with_env_keys() {
+  setup_sandbox; write_env
+  run_in_sandbox_env AWS_SESSION_TOKEN=staleTokenFromShell -- ./deploy.sh --preflight-only
+  assert_exit 0; assert_contains "$(cat "$FAKE_LOG")" "sts get-caller-identity"
+}
+
+# [1] MY_IP 출처 로그는 실제 출처를 말해야 한다
+test_my_ip_source_log_reports_shell_origin() {
+  setup_sandbox; write_env
+  run_in_sandbox_env MY_IP=203.0.113.88 -- ./deploy.sh --preflight-only; assert_exit 0
+  assert_contains "$OUT" "203.0.113.88/32 (셸 환경변수 MY_IP)"
+  assert_not_contains "$(cat "$FAKE_LOG")" "checkip"
+}
+
+# [2] bash 4 미만이면 아무것도 하기 전에 안내하고 멈춘다(mapfile 등 bash 4 기능 사용)
+test_bash_older_than_4_is_rejected_with_guidance() {
+  local out rc=0
+  out="$( (source lib/common.sh; check_bash_version 3) 2>&1)" || rc=$?
+  [ "$rc" -ne 0 ] || fail "bash 3인데 통과함"
+  assert_contains "$out" "bash 4"
+  ( source lib/common.sh; check_bash_version 5 ) || fail "bash 5인데 거부함"
+}
+
+# [3] 여러 인스턴스 중 하나가 이미 없어도 나머지는 따로 종료·대기해야 한다
+test_cleanup_terminates_each_instance_separately() {
+  setup_sandbox; write_env
+  mkdir -p "$SANDBOX/state"; echo "INSTANCE_ID=i-0gone" > "$SANDBOX/state/resources.env"
+  FAKE_DISCOVER=1 FAKE_NOTFOUND_FOR=i-0gone run_in_sandbox ./cleanup.sh; assert_exit 0
+  grep -q '^aws ec2 terminate-instances --instance-ids i-0fake region=' "$FAKE_LOG" || fail "i-0fake 단독 종료 호출 없음"
+  grep -q '^aws ec2 wait instance-terminated --instance-ids i-0fake region=' "$FAKE_LOG" || fail "i-0fake 단독 대기 없음"
+  assert_contains "$OUT" "이미 없음: EC2 종료 요청 i-0gone"
+}
+
+# [4] 내 IP 마스킹은 숫자 경계를 지켜야 한다(다른 IP의 일부를 깨뜨리지 않음)
+test_mask_stream_respects_number_boundaries() {
+  local out odd='/tmp/b3 (x)+y.[z]'
+  out="$( (source lib/common.sh
+    MY_IP=1.2.3.4; ACCOUNT_ID=123456789012; ROOT_DIR="$odd"
+    printf '%s\n' "src 1.2.3.4/32 a=11.2.3.45 b=1.2.3.45 c=21.2.3.4 d=1.2.3.4,1.2.3.4" \
+      "acct 123456789012 long 91234567890123" "$odd/state/k.pem /tmp/b3 (x)+yQ[z]/q" | mask_stream) 2>&1)"
+  assert_contains "$out" "src 1.2.*.*/32 a=11.2.3.45 b=1.2.3.45 c=21.2.3.4 d=1.2.*.*,1.2.*.*"
+  assert_contains "$out" "acct 1234****9012 long 91234567890123"
+  assert_contains "$out" "./state/k.pem /tmp/b3 (x)+yQ[z]/q"
+}
+
+# [5] 고른 유형이 계정의 프리 티어 대상이 아니면 경고만 하고 막지는 않는다
+test_free_tier_mismatch_warns_without_blocking() {
+  setup_sandbox; write_env
+  FAKE_FREE_TIER_TYPES="t2.micro" run_in_sandbox ./deploy.sh --preflight-only; assert_exit 0
+  assert_contains "$OUT" "[WARN]"; assert_contains "$OUT" "INSTANCE_TYPE=t2.micro"
+  assert_contains "$(cat "$FAKE_LOG")" "describe-instance-types --filters Name=free-tier-eligible,Values=true"
+  FAKE_FREE_TIER_TYPES="t3.micro t3.small" run_in_sandbox ./deploy.sh --preflight-only; assert_exit 0
+  assert_not_contains "$OUT" "[WARN]"
+}
+
+# [6] 방금 만든 VPC·서브넷이 조회될 때까지 기다린다(최종 일관성)
+test_deploy_waits_for_vpc_and_subnet_to_exist() {
+  setup_sandbox; write_env
+  FAKE_FAIL_ONCE_ON=describe-subnets FAKE_FAIL_ONCE_WITH=InvalidSubnetID.NotFound run_in_sandbox ./deploy.sh; assert_exit 0
+  assert_order "wait vpc-exists --vpc-ids vpc-0fake" "wait vpc-available"
+  assert_order "describe-subnets --subnet-ids subnet-0fake" "wait subnet-available"
+  [ "$(grep -c 'describe-subnets --subnet-ids subnet-0fake' "$FAKE_LOG")" -ge 2 ] || fail "NotFound 뒤 다시 조회하지 않음"
+  assert_not_contains "$OUT" "단계 실패"
+}
+
+# [9] cleanup 분기: DependencyViolation 재시도, NotFound는 이미 없음, 그 밖의 오류는 재시도 없이 경고
+test_cleanup_retries_dependency_violation_then_succeeds() {
+  setup_sandbox; write_env; run_in_sandbox ./deploy.sh; : > "$FAKE_LOG"
+  FAKE_FAIL_ONCE_ON=delete-security-group FAKE_FAIL_ONCE_WITH=DependencyViolation run_in_sandbox ./cleanup.sh; assert_exit 0
+  [ "$(grep -c ' delete-security-group ' "$FAKE_LOG")" -eq 2 ] || fail "DependencyViolation 뒤 한 번 더 시도하지 않음"
+  assert_contains "$OUT" "다시 시도"
+}
+
+test_cleanup_gives_up_after_retry_limit() {
+  setup_sandbox; write_env; run_in_sandbox ./deploy.sh; : > "$FAKE_LOG"
+  CLEANUP_RETRIES=3 FAKE_FAIL_ON=delete-security-group FAKE_FAIL_CODE=DependencyViolation run_in_sandbox ./cleanup.sh; assert_exit 1
+  [ "$(grep -c ' delete-security-group ' "$FAKE_LOG")" -eq 3 ] || fail "재시도 상한(3)을 지키지 않음"
+  assert_contains "$OUT" "실패: SG 삭제 sg-0fake"
+}
+
+test_cleanup_treats_not_found_as_already_deleted() {
+  setup_sandbox; write_env; run_in_sandbox ./deploy.sh
+  FAKE_NOTFOUND_FOR=subnet-0fake run_in_sandbox ./cleanup.sh; assert_exit 0
+  assert_contains "$OUT" "이미 없음: Subnet 삭제 subnet-0fake"
+  assert_contains "$(cat "$SANDBOX/evidence/aws/05-cleanup.txt")" "→ 이미 없음: Subnet 삭제 subnet-0fake"
+}
+
+test_cleanup_does_not_retry_other_errors() {
+  setup_sandbox; write_env; run_in_sandbox ./deploy.sh; : > "$FAKE_LOG"
+  FAKE_FAIL_ON=delete-vpc run_in_sandbox ./cleanup.sh; assert_exit 1
+  [ "$(grep -c ' delete-vpc ' "$FAKE_LOG")" -eq 1 ] || fail "일반 오류를 재시도함"
 }
 
 # ---------------------------------------------------------------- 실행

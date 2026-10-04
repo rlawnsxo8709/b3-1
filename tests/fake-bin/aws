@@ -8,6 +8,10 @@
 #                     같은 종류의 delete 호출이 이미 로그에 있으면 빈 출력(=삭제됨)
 #   FAKE_LEFTOVER=1   tag:Project 필터 조회가 삭제 뒤에도 가짜 ID를 돌려준다(잔여 리소스)
 #   FAKE_FAIL_ON=op   해당 작업(예: create-security-group)을 AWS 오류처럼 실패시킨다(exit 254)
+#   FAKE_FAIL_CODE=코드  FAKE_FAIL_ON의 오류 코드(기본 FakeFailure, 예: DependencyViolation)
+#   FAKE_FAIL_ONCE_ON=op + FAKE_FAIL_ONCE_WITH=코드  그 작업의 첫 호출만 해당 코드로 실패시킨다
+#   FAKE_NOTFOUND_FOR=문자열  인자에 그 문자열(예: subnet-0fake)이 든 describe 외 호출을 NotFound로 실패시킨다
+#   FAKE_FREE_TIER_TYPES="t3.micro t3.small"  free-tier-eligible 필터 조회 결과(기본값이 이것)
 #   FAKE_IAM_USER_EXISTS=1 / FAKE_IAM_POLICY_EXISTS=1  iam get-user / get-policy 성공
 set -u
 log="${FAKE_LOG:-/dev/null}"
@@ -30,7 +34,17 @@ for a in "$@"; do
 done
 
 if [ -n "${FAKE_FAIL_ON:-}" ] && [ "$op" = "$FAKE_FAIL_ON" ]; then
-  echo "An error occurred (FakeFailure) when calling the ${op} operation: 테스트용 실패 (FAKE_FAIL_ON)" >&2
+  echo "An error occurred (${FAKE_FAIL_CODE:-FakeFailure}) when calling the ${op} operation: 테스트용 실패 (FAKE_FAIL_ON)" >&2
+  exit 254
+fi
+# 첫 호출만 실패: 지금 줄은 이미 로그에 있으므로 같은 작업 줄이 1개면 첫 호출이다
+if [ -n "${FAKE_FAIL_ONCE_ON:-}" ] && [ "$op" = "$FAKE_FAIL_ONCE_ON" ] &&
+  [ "$(grep -c -- " $op " "$log")" -le 1 ]; then
+  echo "An error occurred (${FAKE_FAIL_ONCE_WITH:-FakeFailure}) when calling the ${op} operation: 테스트용 1회 실패" >&2
+  exit 254
+fi
+if [ -n "${FAKE_NOTFOUND_FOR:-}" ] && [[ "$op" != describe-* ]] && [[ " $* " == *"$FAKE_NOTFOUND_FOR"* ]]; then
+  echo "An error occurred (InvalidID.NotFound) when calling the ${op} operation: The ID '${FAKE_NOTFOUND_FOR}' does not exist" >&2
   exit 254
 fi
 
@@ -53,6 +67,11 @@ case "$svc $op" in
       echo "An error occurred (InvalidClientTokenId) when calling the GetCallerIdentity operation: The security token included in the request is invalid." >&2
       exit 254
     fi
+    # 영구 키(AKIA…)에 임시 세션 토큰을 섞어 보내면 실제 AWS도 거부한다
+    if [[ "$AWS_ACCESS_KEY_ID" == AKIA* ]] && [ -n "${AWS_SESSION_TOKEN:-}" ]; then
+      echo "An error occurred (InvalidClientTokenId) when calling the GetCallerIdentity operation: The security token included in the request is invalid." >&2
+      exit 254
+    fi
     if [ "${FAKE_ROOT:-0}" = 1 ]; then
       echo "arn:aws:iam::123456789012:root"
     else
@@ -68,7 +87,13 @@ case "$svc $op" in
   "ec2 create-key-pair")
     printf -- '-----BEGIN OPENSSH PRIVATE KEY-----\nFAKE\n-----END OPENSSH PRIVATE KEY-----\n'
     ;;
-  "ec2 describe-instance-types") echo "x86_64" ;;
+  "ec2 describe-instance-types")
+    if [[ " $* " == *free-tier-eligible* ]]; then
+      printf '%s\n' "${FAKE_FREE_TIER_TYPES:-t3.micro t3.small}" | tr ' ' '\t'
+    else
+      echo "x86_64"
+    fi
+    ;;
   "ec2 describe-images") echo "ami-0fake" ;;
   "ec2 run-instances") echo "i-0fake" ;;
   "ec2 describe-instances")

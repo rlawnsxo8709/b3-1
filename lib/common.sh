@@ -2,6 +2,16 @@
 # B3-1 공통 함수 — deploy.sh·verify.sh·cleanup.sh가 source 한다.
 # .env 로드, 로그, 상태 파일(state/resources.env), 증거 기록(evidence/aws), 태그, 사전 점검을 모은다.
 
+# mapfile 등 bash 4 기능을 쓴다. macOS 기본 bash(3.2)로 배포만 되고 정리가 막히는 일을 아무것도 하기 전에 막는다
+check_bash_version() {
+  local major="${1:-${BASH_VERSINFO[0]}}"
+  if [ "$major" -lt 4 ]; then
+    printf '[ERROR] bash 4 이상이 필요합니다(현재 bash %s). macOS라면 "brew install bash" 후 "bash ./deploy.sh"처럼 새 bash로 실행하세요.\n' "$major" >&2
+    return 1
+  fi
+}
+check_bash_version || exit 1
+
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 STATE_DIR="$ROOT_DIR/state"
 STATE_FILE="$STATE_DIR/resources.env"
@@ -9,6 +19,7 @@ EVIDENCE_DIR="$ROOT_DIR/evidence/aws"
 REQUIRED_REGION="ap-northeast-2"
 ACCOUNT_ID=""
 CALLER_ARN=""
+MY_IP_SOURCE=""
 
 # .env에서 받아들이는 키. 그 밖의 키(PATH 등)는 무시해 실수로 실행 환경을 망가뜨리지 않게 한다
 ENV_KEYS=" AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_REGION MY_IP INSTANCE_TYPE AZ PROJECT "
@@ -41,10 +52,12 @@ env_value() {
 # ROOT_DIR/.env를 읽어 환경변수로 내보낸다. CRLF·따옴표·줄 끝 주석을 허용한다.
 # 키가 비어 있으면 AWS를 부르기 전에 무엇을 채워야 하는지 알려 주고 종료한다.
 load_env() {
-  local env_file="$ROOT_DIR/.env" line key val n=0
+  local env_file="$ROOT_DIR/.env" line key val n=0 shell_my_ip="${MY_IP:-}" env_my_ip=""
   if [ ! -f "$env_file" ]; then
     die ".env 파일이 없습니다. 먼저 'cp .env.example .env'를 실행하고 AWS_ACCESS_KEY_ID와 AWS_SECRET_ACCESS_KEY를 채우세요."
   fi
+  # 자격 증명은 .env에서만 받는다. 셸에 남은 다른 계정(또는 루트) 키·임시 토큰이 조용히 쓰이거나 섞이지 않게 한다
+  unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN
   while IFS= read -r line || [ -n "$line" ]; do
     n=$((n + 1))
     line="${line%$'\r'}"
@@ -64,11 +77,17 @@ load_env() {
     if [ -n "$val" ]; then
       printf -v "$key" '%s' "$val"
       export "${key?}"
+      if [ "$key" = "MY_IP" ]; then env_my_ip="$val"; fi
     fi
   done < "$env_file"
 
   if [ -z "${AWS_ACCESS_KEY_ID:-}" ] || [ -z "${AWS_SECRET_ACCESS_KEY:-}" ]; then
-    die ".env에 AWS_ACCESS_KEY_ID와 AWS_SECRET_ACCESS_KEY를 채우세요. 실습용 IAM 사용자의 액세스 키여야 하며 루트 계정 키는 쓸 수 없습니다. (발급 방법: README 'IAM 사용자 만들기')"
+    die ".env에 AWS_ACCESS_KEY_ID와 AWS_SECRET_ACCESS_KEY를 채우세요. 실습용 IAM 사용자의 액세스 키여야 하며 루트 계정 키는 쓸 수 없습니다. 셸에 export한 키는 쓰지 않습니다. (발급 방법: README 'IAM 사용자 만들기')"
+  fi
+  if [ -n "$env_my_ip" ]; then
+    MY_IP_SOURCE=".env의 MY_IP"
+  elif [ -n "$shell_my_ip" ]; then
+    MY_IP_SOURCE="셸 환경변수 MY_IP"
   fi
 
   AWS_REGION="${AWS_REGION:-$REQUIRED_REGION}"
@@ -95,6 +114,7 @@ load_env() {
   if [ -z "${AWS_SESSION_TOKEN:-}" ]; then
     unset AWS_SESSION_TOKEN
   fi
+  return 0
 }
 
 # ------------------------------------------------------------------ 상태 파일
@@ -128,16 +148,19 @@ mask_account() { printf '%s****%s' "${1:0:4}" "${1: -4}"; }
 # 203.0.113.77 → 203.0.*.*
 mask_ip() { printf '%s.*.*' "${1%.*.*}"; }
 
-sed_escape() { printf '%s' "$1" | sed 's/[][\.*^$|/]/\\&/g'; }
+# 확장 정규식(ERE)에서 글자 그대로 맞도록 특수문자를 이스케이프한다
+sed_escape() { printf '%s' "$1" | sed 's/[][\.*^$|+?(){}]/\\&/g'; }
 
-# 공개 저장소에 올릴 증거에서 계정 ID와 개인 IP를 가리고, 절대 경로를 프로젝트 기준 경로로 바꾼다
+# 공개 저장소에 올릴 증거에서 계정 ID와 개인 IP를 가리고, 절대 경로를 프로젝트 기준 경로로 바꾼다.
+# 계정 ID·IP는 숫자 경계를 지켜 다른 값(예: 11.2.3.45)의 일부를 깨뜨리지 않고,
+# 경계 글자를 함께 소비하므로 붙어 있는 값(1.2.3.4,1.2.3.4)까지 바뀌도록 t 분기로 반복한다
 mask_stream() {
-  local args=(-e "s|$(sed_escape "$ROOT_DIR/")|./|g")
+  local args=(-E -e "s|$(sed_escape "$ROOT_DIR/")|./|g")
   if [ -n "$ACCOUNT_ID" ]; then
-    args+=(-e "s|$ACCOUNT_ID|$(mask_account "$ACCOUNT_ID")|g")
+    args+=(-e ":acct" -e "s/(^|[^0-9])$(sed_escape "$ACCOUNT_ID")([^0-9]|\$)/\1$(mask_account "$ACCOUNT_ID")\2/" -e "t acct")
   fi
   if [ -n "${MY_IP:-}" ]; then
-    args+=(-e "s|$(sed_escape "$MY_IP")|$(mask_ip "$MY_IP")|g")
+    args+=(-e ":ip" -e "s/(^|[^0-9.])$(sed_escape "$MY_IP")([^0-9]|\$)/\1$(mask_ip "$MY_IP")\2/" -e "t ip")
   fi
   sed "${args[@]}"
 }
@@ -205,7 +228,7 @@ is_ipv4() {
 # SSH(22)를 열어 줄 내 공인 IPv4를 정한다. .env의 MY_IP가 우선이고, 없으면 checkip로 감지한다.
 # 결과가 IPv4가 아니면 22번을 넓게 여는 대신 중단한다
 detect_my_ip() {
-  local ip="${MY_IP:-}" from=".env의 MY_IP"
+  local ip="${MY_IP:-}" from="${MY_IP_SOURCE:-.env의 MY_IP}"
   if [ -z "$ip" ]; then
     from="자동 감지(checkip.amazonaws.com)"
     ip="$(curl -4 -fsS --max-time 10 https://checkip.amazonaws.com 2>/dev/null | tr -d '[:space:]')" || ip=""

@@ -106,8 +106,16 @@ clean_instances() {
     --filters "Name=instance-id,Values=$(IFS=,; echo "${ids[*]}")" \
     --query 'Addresses[].AllocationId' --output text 2> /dev/null | tr '\t' '\n' | grep -v -e '^$' -e '^None$' || true)
   EXTRA_EIPS=("${eips[@]}")
-  try "EC2 종료 요청 (${ids[*]})" -- aws ec2 terminate-instances --instance-ids "${ids[@]}"
-  try "EC2 terminated 대기 (${ids[*]})" -- aws ec2 wait instance-terminated --instance-ids "${ids[@]}"
+  # 인스턴스마다 따로 부른다. 여러 ID를 한 번에 넘기면 하나만 이미 없어도(NotFound) 호출 전체가 실패해
+  # 나머지가 살아 있는데도 "이미 없음"으로 오판한다
+  local id
+  for id in "${ids[@]}"; do
+    try "EC2 종료 요청 $id" -- aws ec2 terminate-instances --instance-ids "$id"
+  done
+  # 종료 요청을 모두 보낸 뒤 하나씩 기다린다(종료는 동시에 진행된다)
+  for id in "${ids[@]}"; do
+    try "EC2 terminated 대기 $id" -- aws ec2 wait instance-terminated --instance-ids "$id"
+  done
 }
 
 clean_volumes() {

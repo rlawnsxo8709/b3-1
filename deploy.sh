@@ -15,6 +15,8 @@ source "$SCRIPT_DIR/lib/awscli.sh"
 VPC_CIDR="10.0.0.0/16"
 SUBNET_CIDR="10.0.1.0/24"
 UBUNTU_OWNER="099720109477" # Canonical 공식 계정. 이름만 흉내 낸 타인 AMI를 거른다
+EXISTS_TRIES=20
+EXISTS_SLEEP="${DEPLOY_EXISTS_SLEEP:-3}"
 CURRENT_STEP="시작"
 VPC_ID="" SUBNET_ID="" IGW_ID="" RT_ID="" SG_ID="" KEY_NAME="" AMI_ID="" INSTANCE_ID="" PUBLIC_IP=""
 
@@ -49,6 +51,52 @@ expect_id() {
   fi
 }
 
+# 방금 만든 리소스가 조회될 때까지 기다린다(AWS API의 최종 일관성). NotFound만 다시 시도한다
+wait_exists() {
+  local desc="$1" i err
+  shift 2
+  for ((i = 1; i <= EXISTS_TRIES; i++)); do
+    if err="$("$@" 2>&1 > /dev/null)"; then
+      return 0
+    fi
+    if [[ "$err" != *NotFound* ]]; then
+      printf '%s\n' "$err" >&2
+      return 1
+    fi
+    log "$desc 이(가) 아직 조회되지 않습니다. ${EXISTS_SLEEP}초 뒤 다시 확인합니다(${i}/${EXISTS_TRIES})."
+    sleep "$EXISTS_SLEEP"
+  done
+  printf '[ERROR] %s 이(가) %s번 확인하는 동안 조회되지 않았습니다.\n' "$desc" "$EXISTS_TRIES" >&2
+  return 1
+}
+
+# 프리 티어 대상 유형은 계정마다 다르다(2025-07-15 이전 가입 계정은 서울에서 t2.micro, 이후는 t3.micro 등).
+# 선택한 유형이 대상이 아니면 경고만 하고 막지는 않는다
+check_free_tier() {
+  local eligible alt="" t
+  if ! eligible="$(aws ec2 describe-instance-types --filters Name=free-tier-eligible,Values=true \
+    --query 'InstanceTypes[].InstanceType' --output text 2> /dev/null)"; then
+    warn "프리 티어 대상 인스턴스 유형을 조회하지 못해 확인을 건너뜁니다."
+    return 0
+  fi
+  eligible=" $(printf '%s' "$eligible" | tr -s '[:space:]' ' ') "
+  if [[ "$eligible" == *" $INSTANCE_TYPE "* ]]; then
+    log "인스턴스 유형 $INSTANCE_TYPE: 이 계정의 프리 티어 대상"
+    return 0
+  fi
+  for t in t3.micro t2.micro; do
+    if [[ "$eligible" == *" $t "* ]]; then
+      alt="$t"
+      break
+    fi
+  done
+  if [ -n "$alt" ]; then
+    warn "$INSTANCE_TYPE 은(는) 이 계정의 프리 티어 대상이 아니라 과금될 수 있습니다. 이 계정의 대상은 $alt 입니다 → .env에 INSTANCE_TYPE=$alt 를 넣고 다시 실행하세요. (막지는 않고 그대로 진행합니다)"
+  else
+    warn "$INSTANCE_TYPE 은(는) 이 계정의 프리 티어 대상이 아니고, 허용 유형(t2.micro·t3.micro) 중에도 대상이 없습니다(대상:${eligible}). 과금될 수 있으니 확인하세요. (그대로 진행합니다)"
+  fi
+}
+
 step_vpc() {
   CURRENT_STEP="VPC"
   VPC_ID="$(state_get VPC_ID)"
@@ -59,6 +107,7 @@ step_vpc() {
     expect_id vpc "$VPC_ID" VPC
     state_set VPC_ID "$VPC_ID"
     log "VPC 생성: $VPC_ID ($VPC_CIDR)"
+    aws ec2 wait vpc-exists --vpc-ids "$VPC_ID"
     aws ec2 wait vpc-available --vpc-ids "$VPC_ID"
   else
     log "VPC 재사용: $VPC_ID"
@@ -80,6 +129,8 @@ step_subnet() {
     expect_id subnet "$SUBNET_ID" Subnet
     state_set SUBNET_ID "$SUBNET_ID"
     log "Subnet 생성: $SUBNET_ID ($SUBNET_CIDR, $AZ)"
+    # subnet-available 대기는 NotFound를 만나면 바로 실패하므로, 먼저 조회될 때까지 기다린다
+    wait_exists "Subnet $SUBNET_ID" -- aws ec2 describe-subnets --subnet-ids "$SUBNET_ID"
     aws ec2 wait subnet-available --subnet-ids "$SUBNET_ID"
   else
     log "Subnet 재사용: $SUBNET_ID"
@@ -314,6 +365,7 @@ main() {
 
   CURRENT_STEP="사전 점검"
   preflight
+  check_free_tier
   if [ "$preflight_only" = 1 ]; then
     log "사전 점검 완료 (--preflight-only). 리소스는 만들지 않았습니다."
     exit 0

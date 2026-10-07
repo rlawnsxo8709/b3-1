@@ -23,7 +23,7 @@ SSH_SLEEP="${DEPLOY_SSH_SLEEP:-10}"
 APP_EVIDENCE="03b-app.txt"
 UPLOAD_DIR=".b3-1-upload" # 서버의 /home/ubuntu 기준(권한 700)
 USERDATA_MARKER="/var/lib/b3-1/user-data.done"
-# 서버 준비 확인: 0 = user-data 완료, 3 = cloud-init 오류, 그 밖 = 아직 진행 중(ssh 자체가 안 되면 255)
+# 서버 준비 확인: 0 = user-data 완료, 3 = cloud-init 오류, 1 = 아직 진행 중(기다림). ssh 자체가 안 되면 255(기다림), 그 밖의 코드는 오류로 멈춤
 READY_CMD="test -f $USERDATA_MARKER && exit 0; if cloud-init status 2>/dev/null | grep -q '^status: error'; then exit 3; fi; exit 1"
 CURRENT_STEP="시작"
 # 실패했을 때 보여 줄 다음 행동. 단계가 다시 실행해도 소용없는 실패(예: user-data 실패)면 그 단계가 바꾼다
@@ -408,6 +408,11 @@ wait_for_server() {
   done
   printf '[ERROR] %s번 확인하는 동안 서버가 준비되지 않았습니다. SSH가 안 되면 SG 22번 소스가 지금 내 IP인지(docs/troubleshooting.md "SSH 허용 IP 갱신"), SSH가 되면 /var/log/cloud-init-output.log를 보세요.\n' \
     "$SSH_TRIES" >&2
+  # SSH는 됐는데 완료 표식이 끝내 안 생겼다면(cloud-init이 error 대신 degraded 등으로 끝난 경우 포함) user-data가
+  # 중간에 멈춘 것이다. user-data는 첫 부팅 1회뿐이라 ./deploy.sh 재실행으로는 풀리지 않는다
+  if [ "$rc" = 1 ]; then
+    RESUME_HINT="SSH는 되지만 user-data 완료 표식($USERDATA_MARKER)이 생기지 않았습니다. $ssh_cmd \"sudo tail -50 /var/log/cloud-init-output.log; cloud-init status --long\"로 원인을 보고, 일시 오류였다면 $ssh_cmd 'sudo bash /var/lib/cloud/instance/user-data.txt'로 user-data를 다시 실행한 뒤 ./deploy.sh, 아니면 ./cleanup.sh → ./deploy.sh로 새로 만드세요(./deploy.sh만 다시 실행하면 같은 곳에서 멈추고 인스턴스는 켜진 채 과금)."
+  fi
   return 1
 }
 

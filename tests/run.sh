@@ -1077,6 +1077,25 @@ test_mask_stream_passes_lines_without_waiting() {
   assert_contains "$got" "got:first"
 }
 
+# ---------------------------------------------------------------- Fix round 2: 재리뷰 후속 회귀 테스트
+
+# [2] SSH는 되는데 완료 표식이 끝내 안 생기고(cloud-init이 error를 보고하지 않는 degraded 등) 대기가 끝나면,
+#     "다시 실행하면 이어서"가 아니라 user-data 수동 재실행 또는 정리 후 재배포를 안내한다.
+#     SSH 자체가 끝까지 안 됐다면(255) SG 22번 허용 IP를 고친 뒤 다시 실행하면 이어지므로 기본 안내를 유지한다
+test_deploy_user_data_never_finishing_explains_manual_rerun_or_cleanup() {
+  setup_sandbox; write_env
+  FAKE_USERDATA_PENDING=1000 DEPLOY_SSH_TRIES=3 run_in_sandbox ./deploy.sh; assert_exit 1
+  [ "$(grep -c 'user-data.done' "$FAKE_LOG")" -eq 3 ] || fail "정해진 횟수만큼 기다리지 않음"
+  assert_contains "$OUT" "sudo bash /var/lib/cloud/instance/user-data.txt"
+  assert_contains "$OUT" "./cleanup.sh → ./deploy.sh"
+  assert_not_contains "$OUT" "다시 실행하면 이어서 진행합니다"
+  assert_not_contains "$(cat "$FAKE_LOG")" "scp "
+  setup_sandbox; write_env
+  FAKE_SSH_NOT_READY=1000 DEPLOY_SSH_TRIES=3 run_in_sandbox ./deploy.sh; assert_exit 1
+  assert_contains "$OUT" "다시 실행하면 이어서 진행합니다"
+  assert_not_contains "$OUT" "/var/lib/cloud/instance/user-data.txt"
+}
+
 # ---------------------------------------------------------------- 실행
 
 main() {

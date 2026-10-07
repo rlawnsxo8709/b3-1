@@ -269,7 +269,7 @@ aws ec2 describe-instance-types --region ap-northeast-2 \
 - 앱은 설치에 성공했을 때만 배포한 커밋 SHA를 `APP_COMMIT`으로 적는다. 다시 실행했을 때 **같은 커밋·같은 앱 `.env`(수정 시각·크기, 심볼릭 링크면 대상 파일)·같은 인스턴스**면 앱 재배포를 건너뛰고 검증만 한다. 커밋이 바뀌었거나 `.env`를 고쳤으면 다시 올린다. 서버의 `provision-app.sh`는 여러 번 실행해도 안전하다(venv·`.env`의 `SECRET_KEY`·SQLite DB 유지, 소스만 교체).
 - **같은 커밋·같은 `.env`로 강제 재설치**하려면 `touch <APP_ENV_FILE>`(기본 `../../../ai_chatbot/.env`) 후 `./deploy.sh`를 실행한다. 수정 시각이 바뀌어 소스와 `.env`를 다시 올리고 설치를 다시 한다.
 - SSH가 아직 안 되면(부팅 중) 10초 간격으로 최대 60번 다시 확인한다. 연결 시간 초과가 6번 연속이면 SG 22번의 SSH 허용 IP가 지금 내 IP와 같은지 확인하라고 경고한다(계속 기다린다). 서버의 호스트 키가 `state/known_hosts`와 다르면 기다리지 않고 멈추고 `ssh-keygen -f state/known_hosts -R <IP>` 방법을 알려 준다.
-- user-data가 `cloud-init status: error`로 끝났으면 기다리지 않고 바로 멈춘다. **user-data는 첫 부팅에 한 번만 돌기 때문에 `./deploy.sh`만 다시 실행해서는 풀리지 않는다**(인스턴스는 켜진 채 과금). 안내대로 `/var/log/cloud-init-output.log`를 본 뒤, 일시 오류(apt 미러 등)면 `ssh -i state/b3-1-key.pem ubuntu@<IP> 'sudo bash /var/lib/cloud/instance/user-data.txt'`로 user-data를 다시 돌리고 `./deploy.sh`, 아니면 `./cleanup.sh` → `./deploy.sh`로 새로 만든다.
+- user-data가 `cloud-init status: error`로 끝났으면 기다리지 않고 바로 멈춘다. **user-data는 첫 부팅에 한 번만 돌기 때문에 `./deploy.sh`만 다시 실행해서는 풀리지 않는다**(인스턴스는 켜진 채 과금). 안내대로 `/var/log/cloud-init-output.log`를 본 뒤, 일시 오류(apt 미러 등)면 `ssh -i state/b3-1-key.pem ubuntu@<IP> 'sudo bash /var/lib/cloud/instance/user-data.txt'`로 user-data를 다시 돌리고 `./deploy.sh`, 아니면 `./cleanup.sh` → `./deploy.sh`로 새로 만든다. SSH는 되는데 cloud-init이 error를 보고하지 않은 채(예: degraded) 완료 표식이 끝내 안 생겨 대기 시간이 끝난 경우도 같은 안내를 한다.
 - 그 밖의 실패는 `[ERROR] 단계 실패: <단계>. 원인을 고친 뒤 ./deploy.sh를 다시 실행하면 이어서 진행합니다. 정리는 ./cleanup.sh`가 나온다.
 - `cleanup.sh`는 상태 파일 값과 `Project=b3-1` 태그 조회 결과를 **합쳐** 지운다. 상태 파일을 잃어버려도 정리된다. 한 단계가 실패해도 경고만 남기고 다음 단계로 간다. 남은 리소스가 있으면 목록을 보여 주고 종료 코드 1로 끝난다(여러 번 실행해도 안전).
 
@@ -346,7 +346,7 @@ LLM·네이버 API 실제 호출은 리허설 대상이 아니다(가짜 `.env`�
 ## 테스트
 
 ```bash
-bash tests/run.sh      # 실제 출력 마지막 줄: PASS 83 / FAIL 0 (bash 5.2, bash 4.3 컨테이너 모두)
+bash tests/run.sh      # 실제 출력 마지막 줄: PASS 84 / FAIL 0 (bash 5.2, bash 4.3 컨테이너 모두)
 ```
 
 `PATH` 맨 앞에 가짜 `aws`·`curl`·`ssh`·`scp`([`tests/fake-bin/`](tests/fake-bin))를 넣고 스크립트를 실제로 실행한다. 가짜 명령은 호출을 한 줄씩 기록하고 정해진 ID·응답을 돌려준다. 가짜 `scp`는 인자만 기록하고 파일 내용은 남기지 않는다. 실제 AWS·네트워크는 부르지 않는다.
@@ -361,7 +361,7 @@ bash tests/run.sh      # 실제 출력 마지막 줄: PASS 83 / FAIL 0 (bash 5.2
 | verify (5) | `/health` 200 + JSON·SSH 점검 기록, 503이면 실패, 상태 없으면 안내, SSH 불가면 실패 |
 | cleanup (15) | `MY_IP=/32`에서도 deploy→verify→cleanup 끝까지 진행, 역순 삭제, RT 연결 해제·IGW 분리, 태그 탐색(상태 파일 없음), 인스턴스별 종료·대기, EIP·EBS 해제, 잔여 리소스 보고, 실패해도 계속, DependencyViolation 재시도·재시도 상한, NotFound는 이미 없음, 일반 오류는 재시도 안 함, 두 번 실행, IP 감지 불필요, 키페어·pem·known_hosts 삭제 |
 | aws CLI·IAM (10) | 아키텍처별 설치 URL, `./.tools` 설치, 정책 최소권한·Deny, **스크립트의 모든 ec2 호출이 정책에 있는지**, IAM 도우미(`.env` 작성·재사용·콘솔·루트 거부) |
-| 앱 배포 (25) | **AWS 호출 전 중단**: `APP_SRC`가 git 저장소가 아님·없음, `APP_ENV_FILE` 없음, `APP_REF` 없음, `APP_REF`에 앱 코드 없음(develop 안내) / 경고만: `LLM_API_KEY` 비움, 커밋 안 한 변경 / 기본 경로 `../../../ai_chatbot`·상대 경로 / **`.env`를 파일 경로로 scp하고 비밀 표식이 호출 기록·증거·화면·상태에 없음**, 소스 묶음에 `.env` 없음 / 서버 준비 → 업로드 → 설치 → 검증 순서 / 커밋 SHA 기록, 같은 커밋 재배포 생략, 커밋·`.env`가 바뀌면 재배포 / SSH 대기, user-data 오류면 즉시 중단 / 설치 실패 후 재실행 / **SG 80·22만(8000 없음)**, uvicorn `127.0.0.1` 바인딩 / `provision-app.sh` 정적 검사 / verify: `/health`는 `{"status":"ok"}`만 PASS(`OK`는 FAIL), `/` 303·`-L` 200·`ai-chatbot` 서비스, LLM API `000`은 WARN(종료 코드 0) / **리뷰 후속(9)**: user-data 실패 시 수동 재실행·정리 후 재배포 안내(“다시 실행하면 이어서” 아님), 심볼릭 링크 `.env` 대상이 바뀌면 재배포, `touch`로 강제 재설치, 서버의 기존 `SECRET_KEY` 유지·없을 때만 생성(`.env` 보정 코드를 직접 실행), `ssh`·`scp` 없으면 AWS 호출 전 중단, 준비 확인 1은 대기·예상 밖 코드는 오류, 호스트 키 변경 즉시 중단(`ssh-keygen -R` 안내), 시간 초과 6회 연속 경고, 증거 마스킹이 줄 단위로 바로 출력 |
+| 앱 배포 (26) | **AWS 호출 전 중단**: `APP_SRC`가 git 저장소가 아님·없음, `APP_ENV_FILE` 없음, `APP_REF` 없음, `APP_REF`에 앱 코드 없음(develop 안내) / 경고만: `LLM_API_KEY` 비움, 커밋 안 한 변경 / 기본 경로 `../../../ai_chatbot`·상대 경로 / **`.env`를 파일 경로로 scp하고 비밀 표식이 호출 기록·증거·화면·상태에 없음**, 소스 묶음에 `.env` 없음 / 서버 준비 → 업로드 → 설치 → 검증 순서 / 커밋 SHA 기록, 같은 커밋 재배포 생략, 커밋·`.env`가 바뀌면 재배포 / SSH 대기, user-data 오류면 즉시 중단 / 설치 실패 후 재실행 / **SG 80·22만(8000 없음)**, uvicorn `127.0.0.1` 바인딩 / `provision-app.sh` 정적 검사 / verify: `/health`는 `{"status":"ok"}`만 PASS(`OK`는 FAIL), `/` 303·`-L` 200·`ai-chatbot` 서비스, LLM API `000`은 WARN(종료 코드 0) / **리뷰 후속(9)**: user-data 실패 시 수동 재실행·정리 후 재배포 안내(“다시 실행하면 이어서” 아님), 심볼릭 링크 `.env` 대상이 바뀌면 재배포, `touch`로 강제 재설치, 서버의 기존 `SECRET_KEY` 유지·없을 때만 생성(`.env` 보정 코드를 직접 실행), `ssh`·`scp` 없으면 AWS 호출 전 중단, 준비 확인 1은 대기·예상 밖 코드는 오류, 호스트 키 변경 즉시 중단(`ssh-keygen -R` 안내), 시간 초과 6회 연속 경고, 증거 마스킹이 줄 단위로 바로 출력 / **재리뷰 후속(1)**: SSH는 되는데 user-data 완료 표식이 끝내 안 생기면(진행 중으로 시간 초과) 수동 재실행·정리 후 재배포 안내, SSH가 끝내 안 되면 기본 안내 유지 |
 
 정적 검사:
 
@@ -439,7 +439,7 @@ python3 -m json.tool iam/least-privilege-policy.json > /dev/null                
 │   ├── stack.sh                      리허설 공용 (앱 git archive, 리허설 전용 가짜 .env)
 │   └── repro-port-blocked.sh         트러블슈팅 재현
 ├── tests/
-│   ├── run.sh                        테스트 러너 (83개)
+│   ├── run.sh                        테스트 러너 (84개)
 │   └── fake-bin/{aws,curl,ssh,scp}   가짜 명령
 ├── docs/
 │   ├── architecture.png  make_architecture.py

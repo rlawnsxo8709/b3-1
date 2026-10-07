@@ -192,7 +192,7 @@ sed -i "s|^SSH_CIDR=.*|SSH_CIDR=$NEW|" state/resources.env
 | 앱 키를 user-data에 넣으면 인스턴스 메타데이터·콘솔에 보이는 문제 | user-data에는 비밀값을 넣지 않고, 앱 `.env`는 SSH(내 IP/32)로 파일째 보내 서버에서 600으로 둔다. 테스트가 비밀 표식이 로그·증거·화면에 없음을 확인 |
 | user-data(Nginx·python3-venv 설치)가 끝나기 전에 앱을 설치하는 문제 | user-data 마지막에 `/var/lib/b3-1/user-data.done`을 만들고, `deploy.sh`가 SSH로 이 표식을 확인한 뒤 올린다. `cloud-init status: error`면 기다리지 않고 멈춤 |
 | `SECRET_KEY`가 비었거나 16자 미만이면 앱이 시작하지 않는 문제(ai_chatbot `app/config.py`) | `provision-app.sh`가 서버의 기존 값(16자 이상)을 유지하고, 없을 때만 `secrets.token_hex(32)`로 만든다. 재배포마다 새로 만들면 전원 로그아웃되므로 유지한다. 리허설에서 유지(이전 쿠키로 200)와 생성(길이 64, 이전 쿠키 303)을 모두 확인 |
-| user-data가 실패했는데 `./deploy.sh`만 다시 실행해 같은 곳에서 계속 멈추는 문제(user-data는 첫 부팅 1회만 실행) | `cloud-init status: error`면 기다리지 않고 멈추고, `sudo bash /var/lib/cloud/instance/user-data.txt`로 수동 재실행 후 `./deploy.sh`, 아니면 `./cleanup.sh` → `./deploy.sh`를 안내 |
+| user-data가 실패했는데 `./deploy.sh`만 다시 실행해 같은 곳에서 계속 멈추는 문제(user-data는 첫 부팅 1회만 실행) | `cloud-init status: error`면 기다리지 않고 멈추고, `sudo bash /var/lib/cloud/instance/user-data.txt`로 수동 재실행 후 `./deploy.sh`, 아니면 `./cleanup.sh` → `./deploy.sh`를 안내. error를 보고하지 않은 채(degraded 등) 완료 표식이 끝내 안 생겨 대기 시간이 끝나도 같은 안내 |
 | 같은 퍼블릭 IP를 다른 인스턴스가 받아 SSH 호스트 키가 달라지는 경우를 일시 오류처럼 계속 재시도하는 문제 | `Host key verification failed`면 바로 멈추고 `ssh-keygen -f state/known_hosts -R <IP>` 안내(확인 없이 지우지 말 것 — 중간자 공격일 수도 있다) |
 | SG 22번 허용 IP가 지금 내 IP와 달라 SSH가 막혔는데 최대 약 20분을 그냥 기다리는 문제 | 연결 시간 초과가 6번 연속이면 SSH 허용 IP를 확인하라고 경고 |
 | `ssh`·`scp`가 없는 PC에서 리소스를 다 만든 뒤에야 멈추는 문제 | 사전 점검에서 확인하고 AWS를 부르기 전에 멈춤 |

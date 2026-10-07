@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# B3-1 배포 — .env의 IAM 사용자 키로 서울 리전(ap-northeast-2)에 아래를 만들고 외부 접속까지 검증한다.
+# B3-1 배포 — .env의 IAM 사용자 키로 서울 리전(ap-northeast-2)에 아래를 만들고 ai_chatbot(FastAPI)을 올려 외부 접속까지 검증한다.
 #   VPC 10.0.0.0/16 → Public Subnet 10.0.1.0/24 → IGW 연결 → Route Table(0.0.0.0/0 → IGW)
-#   → SG(80: 0.0.0.0/0, 22: 내 IP/32) → 키페어 → Ubuntu 24.04 EC2(user-data로 Nginx) → verify.sh --wait
-# 만든 리소스 ID는 즉시 state/resources.env에 적는다. 중간에 실패하면 원인을 고친 뒤 다시 실행한다.
-# 이미 끝난 단계는 건너뛰고 이어서 진행한다.
+#   → SG(80: 0.0.0.0/0, 22: 내 IP/32) → 키페어 → Ubuntu 24.04 EC2(user-data로 Nginx 프록시·python3-venv)
+#   → SSH로 앱 소스(git archive)·앱 .env 전송 → server/provision-app.sh(venv·systemd, 127.0.0.1:8000) → verify.sh --wait
+# 만든 리소스 ID와 배포한 앱 커밋은 즉시 state/resources.env에 적는다. 중간에 실패하면 원인을 고친 뒤 다시 실행한다.
+# 이미 끝난 단계는 건너뛰고 이어서 진행한다(같은 커밋·같은 앱 .env면 앱 재배포도 건너뛴다).
 set -Eeuo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -17,6 +18,13 @@ SUBNET_CIDR="10.0.1.0/24"
 UBUNTU_OWNER="099720109477" # Canonical 공식 계정. 이름만 흉내 낸 타인 AMI를 거른다
 EXISTS_TRIES=20
 EXISTS_SLEEP="${DEPLOY_EXISTS_SLEEP:-3}"
+SSH_TRIES="${DEPLOY_SSH_TRIES:-60}"
+SSH_SLEEP="${DEPLOY_SSH_SLEEP:-10}"
+APP_EVIDENCE="03b-app.txt"
+UPLOAD_DIR=".b3-1-upload" # 서버의 /home/ubuntu 기준(권한 700)
+USERDATA_MARKER="/var/lib/b3-1/user-data.done"
+# 서버 준비 확인: 0 = user-data 완료, 3 = cloud-init 오류, 그 밖 = 아직 진행 중(ssh 자체가 안 되면 255)
+READY_CMD="test -f $USERDATA_MARKER && exit 0; if cloud-init status 2>/dev/null | grep -q '^status: error'; then exit 3; fi; exit 1"
 CURRENT_STEP="시작"
 VPC_ID="" SUBNET_ID="" IGW_ID="" RT_ID="" SG_ID="" KEY_NAME="" AMI_ID="" INSTANCE_ID="" PUBLIC_IP=""
 
@@ -25,11 +33,14 @@ usage() {
 사용법: ./deploy.sh [--preflight-only]
 
   (옵션 없음)        사전 점검 → VPC·Subnet·IGW·Route Table·SG·키페어·EC2 생성
+                     → SSH로 ai_chatbot 소스·.env 전송 → 서버에서 설치(venv·systemd)
                      → /health 응답 대기 → 외부 접속 검증 → evidence/aws/에 증거 저장
-  --preflight-only   .env·aws CLI·자격 증명(루트 거부)·내 IP·프리 티어 대상 유형(아니면 경고) 확인까지만 한다.
-                     리소스를 만들지 않는다
+  --preflight-only   .env·앱 소스(APP_SRC·APP_REF·APP_ENV_FILE)·aws CLI·자격 증명(루트 거부)·내 IP·
+                     프리 티어 대상 유형(아니면 경고) 확인까지만 한다. 리소스를 만들지 않는다
   -h, --help         이 도움말
 
+배포할 앱: .env의 APP_SRC(비우면 ../../../ai_chatbot), APP_REF(기본 HEAD, 앱 코드는 develop 브랜치),
+APP_ENV_FILE(기본 APP_SRC/.env). 앱 .env는 SSH(22, 내 IP만)로 파일째 보내며 화면·증거에 값을 남기지 않는다.
 다시 실행하면 state/resources.env에 기록된 단계는 건너뛴다. 실습이 끝나면 ./cleanup.sh
 EOF
 }
@@ -339,16 +350,96 @@ step_evidence() {
   log "증거 저장: evidence/aws/01-network.txt, 02-security-group.txt, 03-instance.txt"
 }
 
+# SSH가 열리고 user-data(Nginx 프록시·python3-venv 설치)가 끝날 때까지 기다린다.
+# ssh 종료 코드 255 = 아직 접속 불가(부팅 중), 1 = user-data 진행 중, 3 = cloud-init 오류(기다려도 소용없어 바로 멈춘다)
+wait_for_server() {
+  local i rc out
+  log "SSH 접속과 첫 부팅 설치(user-data) 완료를 기다립니다(${SSH_SLEEP}초 간격, 최대 ${SSH_TRIES}번). 보통 2~4분 걸립니다."
+  for ((i = 1; i <= SSH_TRIES; i++)); do
+    rc=0
+    # shellcheck disable=SC2029 # READY_CMD는 이 스크립트의 고정 문자열이라 여기서 펼쳐 보내는 것이 맞다
+    out="$(ssh "${SSH_OPTS[@]}" "ubuntu@$PUBLIC_IP" "$READY_CMD" 2>&1)" || rc=$?
+    case "$rc" in
+      0)
+        log "서버 준비 완료: SSH 접속 성공, user-data 완료 표식 확인 (${i}번째 확인)"
+        evidence_note "$APP_EVIDENCE" "# 서버 준비 확인: SSH 접속 성공, $USERDATA_MARKER 있음 (${i}번째 확인)"
+        return 0
+        ;;
+      3)
+        printf '[ERROR] 첫 부팅 설치(user-data)가 실패했습니다(cloud-init status: error). 원인 확인: ssh -i state/%s.pem ubuntu@%s "sudo tail -50 /var/log/cloud-init-output.log"\n' \
+          "$KEY_NAME" "$PUBLIC_IP" >&2
+        return 1
+        ;;
+      255) log "SSH 대기 중 ${i}/${SSH_TRIES}${out:+ — ${out%%$'\n'*}}" ;;
+      *) log "user-data 진행 중 ${i}/${SSH_TRIES} (Nginx·python3-venv 설치)" ;;
+    esac
+    sleep "$SSH_SLEEP"
+  done
+  printf '[ERROR] %s번 확인하는 동안 서버가 준비되지 않았습니다. SSH가 안 되면 SG 22번 소스가 지금 내 IP인지(docs/troubleshooting.md "SSH 허용 IP 갱신"), SSH가 되면 /var/log/cloud-init-output.log를 보세요.\n' \
+    "$SSH_TRIES" >&2
+  return 1
+}
+
+# ai_chatbot을 서버에 올린다: 서버 준비 대기 → git archive 소스·provision-app.sh·앱 .env를 scp → 서버에서 설치.
+# 앱 .env는 파일 경로로만 다룬다(값을 명령줄·로그·증거에 싣지 않는다). user-data(메타데이터)에도 넣지 않는다.
+# 같은 커밋·같은 앱 .env·같은 인스턴스면 건너뛴다. 설치에 성공했을 때만 커밋을 기록하므로 실패 후 재실행하면 다시 설치한다
+step_app() {
+  CURRENT_STEP="앱 배포"
+  local stamp tmp remote="ubuntu@$PUBLIC_IP" short="${APP_COMMIT_SHA:0:12}"
+  stamp="$(app_env_stamp)"
+  if [ "$(state_get APP_COMMIT)" = "$APP_COMMIT_SHA" ] && [ "$(state_get APP_INSTANCE)" = "$INSTANCE_ID" ] &&
+    [ "$(state_get APP_ENV_STAMP)" = "$stamp" ]; then
+    log "앱 재배포 생략: 커밋 $short 과(와) 같은 앱 .env가 이 인스턴스에 이미 배포돼 있습니다."
+    return 0
+  fi
+  ssh_setup
+  evidence_begin "$APP_EVIDENCE" "앱 배포 — ai_chatbot(FastAPI) 소스·.env 전송, 서버 설치(venv·systemd, uvicorn 127.0.0.1:8000) (deploy.sh)"
+  evidence_note "$APP_EVIDENCE" "# 배포 커밋: $APP_COMMIT_SHA (APP_REF=$APP_REF) — $(git -C "$APP_SRC" log -1 --date=short --format='%s (%ad)' "$APP_COMMIT_SHA")"
+  evidence_note "$APP_EVIDENCE" "# 앱 .env는 파일째 scp로 보내고 서버에서 600 권한으로 둔다. 값은 이 기록에 남기지 않는다(항목별 있음/비어 있음만)"
+  wait_for_server
+
+  tmp="$(mktemp -d "$STATE_DIR/.upload.XXXXXX")"
+  # 커밋된 파일만 묶는다. 추적하지 않는 .env·.venv·app.db는 들어가지 않는다
+  if ! record "$APP_EVIDENCE" -- git -C "$APP_SRC" archive --format=tar.gz -o "$tmp/app.tar.gz" "$APP_COMMIT_SHA"; then
+    rm -rf "$tmp"
+    return 1
+  fi
+  evidence_note "$APP_EVIDENCE" "# 압축 파일: $(tar -tzf "$tmp/app.tar.gz" | wc -l | tr -d ' ')개 항목, $(wc -c < "$tmp/app.tar.gz" | tr -d ' ') bytes"
+  log "앱 소스와 앱 .env를 서버로 보냅니다(SSH 22, 내 IP만 허용)..."
+  if ! record "$APP_EVIDENCE" -- ssh "${SSH_OPTS[@]}" "$remote" "rm -rf $UPLOAD_DIR && mkdir -m 700 $UPLOAD_DIR" ||
+    ! record "$APP_EVIDENCE" -- scp "${SSH_OPTS[@]}" "$tmp/app.tar.gz" "$remote:$UPLOAD_DIR/app.tar.gz" ||
+    ! record "$APP_EVIDENCE" -- scp "${SSH_OPTS[@]}" "$ROOT_DIR/server/provision-app.sh" "$remote:$UPLOAD_DIR/provision-app.sh" ||
+    ! record "$APP_EVIDENCE" -- scp "${SSH_OPTS[@]}" "$APP_ENV_FILE" "$remote:$UPLOAD_DIR/app.env"; then
+    rm -rf "$tmp"
+    printf '[ERROR] 서버로 파일을 보내지 못했습니다(SSH 22). 위 오류를 확인하고 ./deploy.sh를 다시 실행하세요.\n' >&2
+    return 1
+  fi
+  rm -rf "$tmp"
+  log "서버에서 앱을 설치합니다(venv·pip·systemd). 처음에는 1~3분 걸립니다..."
+  if ! record "$APP_EVIDENCE" -- ssh "${SSH_OPTS[@]}" "$remote" \
+    "sudo bash $UPLOAD_DIR/provision-app.sh /home/ubuntu/$UPLOAD_DIR $APP_COMMIT_SHA"; then
+    printf '[ERROR] 서버의 앱 설치(server/provision-app.sh)가 실패했습니다. 위 [provision] 출력과 evidence/aws/%s를 보고, 서버에서 "sudo journalctl -u ai-chatbot -n 50"으로 원인을 확인하세요.\n' \
+      "$APP_EVIDENCE" >&2
+    return 1
+  fi
+  state_set APP_COMMIT "$APP_COMMIT_SHA"
+  state_set APP_INSTANCE "$INSTANCE_ID"
+  state_set APP_ENV_STAMP "$stamp"
+  log "앱 배포 완료: 커밋 $short (기록: evidence/aws/$APP_EVIDENCE)"
+}
+
 print_summary() {
   cat << EOF
 
 ==================== 배포 완료 ====================
- 헬스체크 (방식 B)   http://$PUBLIC_IP/health   ← README '접속 정보'에 적을 주소
- 웹 페이지 (방식 A)  http://$PUBLIC_IP/
+ 헬스체크 (방식 B)   http://$PUBLIC_IP/health   → {"status":"ok"}  ← README '접속 정보'에 적을 주소
+ 챗봇 화면 (방식 A)  http://$PUBLIC_IP/   (비로그인이면 /login으로 이동, 가입은 /signup)
  SSH                 ssh -i state/$KEY_NAME.pem ubuntu@$PUBLIC_IP
- 증거 파일           evidence/aws/00-identity.txt ~ 04-verify.txt
- 할 일               브라우저로 /health 화면 캡처 → docs/screenshots/
- 정리 (실습 후 필수)  ./cleanup.sh
+ 앱 로그             ssh -i state/$KEY_NAME.pem ubuntu@$PUBLIC_IP 'sudo journalctl -u ai-chatbot -n 50'
+ 증거 파일           evidence/aws/00-identity.txt ~ 04-verify.txt (앱 설치: 03b-app.txt)
+ 할 일               /health 화면 캡처 → docs/screenshots/, 테스트 계정으로 가입·로그인·질문 확인
+                     (HTTP라 실제 비밀번호는 쓰지 않는다)
+ 정리 (실습 후 필수)  ./cleanup.sh   (서버의 SQLite 가입·대화 기록도 함께 삭제된다)
 ====================================================
 EOF
 }
@@ -369,7 +460,7 @@ main() {
   trap 'on_error "$?" "$BASH_COMMAND"' ERR
 
   CURRENT_STEP="사전 점검"
-  preflight
+  preflight --app
   check_free_tier
   if [ "$preflight_only" = 1 ]; then
     log "사전 점검 완료 (--preflight-only). 리소스는 만들지 않았습니다."
@@ -384,10 +475,11 @@ main() {
   step_keypair
   step_instance
   step_evidence
+  step_app
 
   CURRENT_STEP="외부 접속 검증"
   if ! "$SCRIPT_DIR/verify.sh" --wait; then
-    die "외부 접속 검증에 실패했습니다. 리소스는 남아 있습니다. 잠시 뒤 ./verify.sh --wait로 다시 확인하고, 계속 실패하면 docs/troubleshooting.md의 점검 순서(라우팅 → SG → 퍼블릭 IP → 프로세스·로그)를 따르세요. 정리는 ./cleanup.sh"
+    die "외부 접속 검증에 실패했습니다. 리소스는 남아 있습니다. 잠시 뒤 ./verify.sh --wait로 다시 확인하고, 계속 실패하면 docs/troubleshooting.md의 점검 순서(라우팅 → SG → 퍼블릭 IP → 프로세스·로그, 502면 ai-chatbot 서비스)를 따르세요. 정리는 ./cleanup.sh"
   fi
   print_summary
 }

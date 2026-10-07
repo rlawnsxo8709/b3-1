@@ -2,18 +2,24 @@
 # 트러블슈팅 재현 (로컬 리허설, AWS 아님) — "서버는 떠 있는데 밖에서 안 들어온다"
 # 포트를 게시하지 않은 컨테이너(-p 생략)는 보안 그룹 인바운드 80이 닫힌 EC2와 같은 증상을 보인다.
 # 증상 → 가설(프로세스 / 리슨 주소 / 네트워크 경로) → 검증 → 조치 → 결과를 evidence/local/troubleshooting-port.txt에 기록한다.
+# 서버는 EC2와 같은 순서(user-data.sh → 앱 소스·리허설 전용 가짜 .env → provision-app.sh)로 만든다(local/stack.sh).
+#   REPRO_OUT=<파일> 로 기록 위치를 바꿀 수 있다(보관 중인 증거를 덮어쓰지 않고 다시 돌려 볼 때)
 set -Eeuo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR" # 기록에 개인 절대 경로가 남지 않도록 프로젝트 기준 상대 경로로 실행한다
+# shellcheck source=local/stack.sh
+source local/stack.sh
 NAME="b3-1-repro"
 IMAGE="ubuntu:24.04"
 HOST_PORT="18080"
-OUT="evidence/local/troubleshooting-port.txt"
+OUT="${REPRO_OUT:-evidence/local/troubleshooting-port.txt}"
 URL="http://127.0.0.1:${HOST_PORT}/health"
+mkdir -p state
+TMP="$(mktemp -d state/.repro.XXXXXX)" # state/는 git 제외. 가짜 .env는 여기에만 둔다
 
 remove_container() { docker rm -f "$NAME" > /dev/null 2>&1 || true; }
-trap remove_container EXIT
+trap 'remove_container; rm -rf "$TMP"' EXIT
 
 note() { printf '%s\n' "$*" | tee -a "$OUT"; }
 
@@ -21,22 +27,32 @@ run() {
   local rc=0
   printf '\n$ %s\n' "$*" | tee -a "$OUT" >&2
   "$@" 2>&1 | tee -a "$OUT" || rc="${PIPESTATUS[0]}"
+  if [ -n "$(tail -c 1 "$OUT")" ]; then printf '\n' >> "$OUT"; fi
   printf '(종료 코드 %s)\n' "$rc" | tee -a "$OUT" >&2
   return "$rc"
 }
 
-# user-data 실행(출력은 rehearsal.txt와 같으므로 마지막 3줄만 남긴다)과 리허설용 진단 도구(ss) 설치
+# user-data 실행과 앱 설치(출력은 rehearsal.txt와 같으므로 마지막 몇 줄만 남긴다), 리허설용 진단 도구(ss) 설치
 provision() {
   docker cp server/user-data.sh "$NAME:/tmp/user-data.sh"
   note ""
   note "\$ docker exec $NAME bash /tmp/user-data.sh   # 출력은 마지막 3줄만 발췌"
   docker exec "$NAME" bash /tmp/user-data.sh 2>&1 | tail -n 3 | tee -a "$OUT"
+  stack_archive "$TMP"
+  stack_fake_env "$TMP" generate
+  docker exec "$NAME" install -d -m 700 -o ubuntu -g ubuntu "$STACK_UPLOAD"
+  docker cp "$TMP/app.tar.gz" "$NAME:$STACK_UPLOAD/app.tar.gz"
+  docker cp server/provision-app.sh "$NAME:$STACK_UPLOAD/provision-app.sh"
+  docker cp "$TMP/app.env" "$NAME:$STACK_UPLOAD/app.env"
+  note "\$ docker exec $NAME bash $STACK_UPLOAD/provision-app.sh $STACK_UPLOAD ${STACK_COMMIT:0:12}   # 앱 설치(리허설 전용 가짜 .env), 마지막 줄만 발췌"
+  docker exec "$NAME" bash "$STACK_UPLOAD/provision-app.sh" "$STACK_UPLOAD" "$STACK_COMMIT" 2>&1 | tail -n 1 | tee -a "$OUT"
   docker exec "$NAME" bash -c 'DEBIAN_FRONTEND=noninteractive apt-get install -y -qq iproute2 > /dev/null 2>&1'
 }
 
 http_code() { curl -s -o /dev/null -w '%{http_code}' --max-time 5 "$1" || true; }
 
 command -v docker > /dev/null 2>&1 || { echo "[ERROR] docker가 필요합니다." >&2; exit 1; }
+stack_app_src
 mkdir -p "$(dirname "$OUT")"
 {
   echo "# 트러블슈팅 재현 — 로컬 리허설 (AWS 아님)"
@@ -47,7 +63,7 @@ mkdir -p "$(dirname "$OUT")"
 
 remove_container
 note ""
-note "## 0. 재현 — 포트를 게시하지 않고(-p 생략) 같은 user-data로 서버를 띄운다"
+note "## 0. 재현 — 포트를 게시하지 않고(-p 생략) 같은 user-data·앱 설치로 서버를 띄운다"
 run docker run -d --name "$NAME" "$IMAGE" sleep infinity
 provision
 

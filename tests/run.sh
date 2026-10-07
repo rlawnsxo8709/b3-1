@@ -13,6 +13,8 @@ trap 'rm -rf "$TEST_ROOT"' EXIT
 FAIL_MARK=""
 SANDBOX=""
 FAKE_LOG=""
+APP_FIX=""
+REMOTE_DIR=""
 OUT=""
 RC=0
 
@@ -57,7 +59,37 @@ assert_order() {
   fi
 }
 
-# 프로젝트 사본을 만든다. 사용자의 실제 .env·state·evidence/aws·.tools는 복사하지 않는다
+# 배포 대상 앱(ai_chatbot)의 비밀값 대신 쓰는 표식. 이 문자열이 로그·증거·화면·상태 파일에 나오면 유출이다
+SECRET_MARKER="B31-SECRET-MARKER-7f3a9c0d1e2f"
+LLM_MARKER="B31-LLMKEY-MARKER-2b8e4d6a"
+
+# git 명령을 사용자 설정(전역 훅·서명 등)과 무관하게 실행한다
+tgit() {
+  git -c init.defaultBranch=main -c user.name=b3-1-test -c user.email=test@example.com \
+    -c commit.gpgsign=false -c core.hooksPath=/dev/null "$@"
+}
+
+# 테스트용 앱 체크아웃: 작은 git 저장소. 실제 ai_chatbot은 쓰지 않는다(그 .env는 읽지도 않는다).
+#   태그 no-app: 앱 코드가 없는 첫 커밋(ai_chatbot의 main처럼) / HEAD: app/main.py·requirements.txt가 있는 커밋
+#   .env: 추적하지 않는 파일(.gitignore). 비밀 표식이 들어 있다
+make_app_repo() {
+  local dir="$1"
+  mkdir -p "$dir/app"
+  printf '.env\n*.env\n' > "$dir/.gitignore"
+  tgit -C "$dir" init -q
+  tgit -C "$dir" add .gitignore
+  tgit -C "$dir" commit -q -m "Initial commit"
+  tgit -C "$dir" tag no-app
+  printf 'from fastapi import FastAPI\napp = FastAPI()\n' > "$dir/app/main.py"
+  printf 'fastapi\nuvicorn\n' > "$dir/requirements.txt"
+  tgit -C "$dir" add app requirements.txt
+  tgit -C "$dir" commit -q -m "앱 코드"
+  printf '%s\n' "SECRET_KEY=$SECRET_MARKER" "DATABASE_URL=sqlite:///./app.db" \
+    "LLM_API_KEY=$LLM_MARKER" "NAVER_CLIENT_ID=" "NAVER_CLIENT_SECRET=" > "$dir/.env"
+}
+
+# 프로젝트 사본을 만든다. 사용자의 실제 .env·state·evidence/aws·.tools는 복사하지 않는다.
+# 사본 옆에 테스트용 앱 저장소($APP_FIX)도 만든다
 setup_sandbox() {
   SANDBOX="$(mktemp -d "$TEST_ROOT/sandbox.XXXXXX")"
   rsync -a \
@@ -65,13 +97,28 @@ setup_sandbox() {
     --include /.env.example --exclude '/.env' --exclude '/.env.*' \
     "$PROJECT_DIR/" "$SANDBOX/"
   FAKE_LOG="$SANDBOX/calls.log"
+  APP_FIX="$SANDBOX-app"
+  REMOTE_DIR="$SANDBOX-remote"
+  make_app_repo "$APP_FIX"
 }
 
-# 가짜 키 두 개만 채운 .env
+# 가짜 키 두 개와 테스트용 앱 경로만 채운 .env
 write_env() {
   printf '%s\n' \
     "AWS_ACCESS_KEY_ID=AKIAFAKEFAKEFAKEFAKE" \
-    "AWS_SECRET_ACCESS_KEY=fakeSecretKeyForTestsOnly000000000000000" > "$SANDBOX/.env"
+    "AWS_SECRET_ACCESS_KEY=fakeSecretKeyForTestsOnly000000000000000" \
+    "APP_SRC=$APP_FIX" > "$SANDBOX/.env"
+}
+
+# 사본 안의 모든 파일(로그·증거·상태·.env)과 마지막 화면 출력에 비밀 표식이 없어야 한다
+assert_no_secret_leak() {
+  local hits m
+  for m in "$SECRET_MARKER" "$LLM_MARKER"; do
+    # tests/는 표식 문자열을 정의한 이 파일의 사본이라 뺀다
+    hits="$(grep -rlF --exclude-dir=tests -- "$m" "$SANDBOX" 2> /dev/null || true)"
+    [ -z "$hits" ] || fail "비밀 표식이 파일에 남음: ${hits//$'\n'/, }"
+    assert_not_contains "$OUT" "$m"
+  done
 }
 
 # 사본에서 명령을 실행한다. 호스트의 AWS 관련 환경변수는 지우고 가짜 명령을 PATH 앞에 둔다
@@ -90,9 +137,9 @@ run_in_sandbox_env() {
   OUT="$(cd "$SANDBOX" && env \
     -u AWS_ACCESS_KEY_ID -u AWS_SECRET_ACCESS_KEY -u AWS_SESSION_TOKEN \
     -u AWS_PROFILE -u AWS_DEFAULT_PROFILE -u AWS_REGION -u AWS_DEFAULT_REGION \
-    -u MY_IP -u INSTANCE_TYPE -u AZ -u PROJECT \
-    PATH="$SANDBOX/tests/fake-bin:$PATH" FAKE_LOG="$FAKE_LOG" \
-    VERIFY_WAIT_INTERVAL=0 CLEANUP_RETRY_SLEEP=0 DEPLOY_EXISTS_SLEEP=0 \
+    -u MY_IP -u INSTANCE_TYPE -u AZ -u PROJECT -u APP_SRC -u APP_ENV_FILE -u APP_REF \
+    PATH="$SANDBOX/tests/fake-bin:$PATH" FAKE_LOG="$FAKE_LOG" FAKE_REMOTE_DIR="$REMOTE_DIR" \
+    VERIFY_WAIT_INTERVAL=0 CLEANUP_RETRY_SLEEP=0 DEPLOY_EXISTS_SLEEP=0 DEPLOY_SSH_SLEEP=0 \
     ${assigns[@]+"${assigns[@]}"} timeout 120 "$@" 2>&1)"
   RC=$?
 }
@@ -143,7 +190,8 @@ test_env_file_tolerates_crlf_quotes_and_comments() {
     "# 윈도우 메모장으로 저장한 .env" \
     'AWS_ACCESS_KEY_ID="AKIAFAKEFAKEFAKEFAKE"' \
     "AWS_SECRET_ACCESS_KEY=fakeSecret/with+chars   # 주석" \
-    "MY_IP=203.0.113.77   # 내 IP" > "$SANDBOX/.env"
+    "MY_IP=203.0.113.77   # 내 IP" \
+    "APP_SRC=\"$APP_FIX\"   # 배포할 앱" > "$SANDBOX/.env"
   run_in_sandbox ./deploy.sh --preflight-only; assert_exit 0
   assert_contains "$(cat "$FAKE_LOG")" "sts get-caller-identity"
 }
@@ -169,18 +217,28 @@ test_non_free_tier_instance_type_rejected() {
 
 # ---------------------------------------------------------------- Task 2: 서버 설정(user-data)
 
+# Nginx는 80에서 받아 127.0.0.1:8000(uvicorn)으로 넘긴다. /health도 앱이 답한다(Nginx 고정 응답 없음).
+# 비밀값은 user-data(인스턴스 메타데이터·콘솔에 보이는 곳)에 넣지 않는다
 test_user_data_static() {
   local f=server/user-data.sh
   [ -f "$f" ] || { fail "$f 없음"; return; }
   bash -n "$f" || fail "$f 문법 오류"
   grep -q 'set -euxo pipefail' "$f" || fail "set -euxo pipefail 없음"
-  grep -q 'location = /health' "$f" || fail "/health 블록 없음"
-  grep -qF 'return 200 "OK' "$f" || fail '/health 고정 응답(return 200 "OK) 없음'
   grep -q 'listen 80 default_server' "$f" || fail "80 포트 리슨 설정 없음"
-  grep -q 'Hello Cloud' "$f" || fail "index.html 문구 없음"
+  grep -qF 'proxy_pass http://127.0.0.1:8000' "$f" || fail "127.0.0.1:8000 프록시 설정 없음"
+  grep -qF 'proxy_read_timeout 90s' "$f" || fail "proxy_read_timeout 90s 없음(LLM 응답 최대 50초)"
+  grep -qF 'proxy_set_header Host' "$f" || fail "Host 헤더 전달 없음"
+  grep -qF 'proxy_set_header X-Forwarded-For' "$f" || fail "X-Forwarded-For 헤더 전달 없음"
+  ! grep -qF 'location = /health' "$f" || fail "/health는 앱으로 넘겨야 함(Nginx 고정 응답 금지)"
+  ! grep -qF 'return 200' "$f" || fail "Nginx 고정 응답이 남아 있음"
+  grep -q 'python3-venv' "$f" || fail "python3-venv 설치 없음"
+  grep -qF '/home/ubuntu/ai_chatbot' "$f" || fail "앱 폴더 준비 없음"
+  grep -qF '/var/lib/b3-1/user-data.done' "$f" || fail "완료 표식 없음"
   grep -q '/run/systemd/system' "$f" || fail "systemd 유무 분기 없음"
   grep -q 'nginx -t' "$f" || fail "nginx -t 설정 검사 없음"
   ! grep -qF '0.0.0.0/0' "$f" || fail "user-data에 0.0.0.0/0 문자열이 있으면 안 됨"
+  ! grep -qE 'listen[[:space:]]+8000|0\.0\.0\.0:8000' "$f" || fail "8000을 바깥에 열면 안 됨"
+  ! grep -qE 'SECRET_KEY|LLM_API_KEY|NAVER_CLIENT' "$f" || fail "user-data에 비밀값 항목이 있으면 안 됨"
 }
 
 # ---------------------------------------------------------------- Task 3: deploy.sh
@@ -646,6 +704,222 @@ test_deploy_waits_for_new_igw_route_table_and_sg() {
   assert_exit 0; assert_not_contains "$OUT" "단계 실패"
   [ "$(lines_before "describe-security-groups --group-ids sg-0fake" "authorize-security-group-ingress")" -ge 2 ] ||
     fail "SG: NotFound 뒤 다시 조회하고 규칙을 추가해야 함"
+}
+
+# ---------------------------------------------------------------- ai_chatbot 배포: 사전 점검 (AWS 호출 전)
+
+# 앱 소스가 git 저장소가 아니거나 없으면 AWS를 한 번도 부르지 않고 멈춘다
+test_deploy_stops_before_aws_when_app_src_is_not_a_git_repo() {
+  setup_sandbox; write_env; mkdir -p "$SANDBOX-plain"
+  echo "APP_SRC=$SANDBOX-plain" >> "$SANDBOX/.env"
+  run_in_sandbox ./deploy.sh; assert_exit 1
+  assert_contains "$OUT" "APP_SRC"; assert_contains "$OUT" "git 저장소"
+  assert_not_contains "$(cat "$FAKE_LOG" 2>/dev/null)" "aws "
+  setup_sandbox; write_env; echo "APP_SRC=$SANDBOX-없는-폴더" >> "$SANDBOX/.env"
+  run_in_sandbox ./deploy.sh; assert_exit 1; assert_contains "$OUT" "APP_SRC"
+  assert_not_contains "$(cat "$FAKE_LOG" 2>/dev/null)" "aws "
+}
+
+# 앱 .env가 없으면 AWS를 부르기 전에 멈추고 준비 방법을 알려 준다
+test_deploy_stops_before_aws_when_app_env_file_missing() {
+  setup_sandbox; write_env; echo "APP_ENV_FILE=$APP_FIX/없는.env" >> "$SANDBOX/.env"
+  run_in_sandbox ./deploy.sh; assert_exit 1
+  assert_contains "$OUT" "APP_ENV_FILE"; assert_contains "$OUT" ".env.example"
+  assert_not_contains "$(cat "$FAKE_LOG" 2>/dev/null)" "aws "
+  # 기본값(APP_SRC/.env)이 없을 때도 같다
+  setup_sandbox; write_env; rm -f "$APP_FIX/.env"
+  run_in_sandbox ./deploy.sh --preflight-only; assert_exit 1; assert_contains "$OUT" "APP_ENV_FILE"
+  assert_not_contains "$(cat "$FAKE_LOG" 2>/dev/null)" "aws "
+}
+
+# 없는 브랜치·커밋을 APP_REF로 주면 AWS를 부르기 전에 멈춘다
+test_deploy_stops_before_aws_when_app_ref_is_unknown() {
+  setup_sandbox; write_env; echo "APP_REF=없는-브랜치" >> "$SANDBOX/.env"
+  run_in_sandbox ./deploy.sh; assert_exit 1; assert_contains "$OUT" "APP_REF"
+  assert_not_contains "$(cat "$FAKE_LOG" 2>/dev/null)" "aws "
+}
+
+# APP_REF 트리에 app/main.py·requirements.txt가 없으면(ai_chatbot의 main은 초기 커밋뿐) 멈추고 develop을 안내한다
+test_deploy_stops_before_aws_when_app_ref_has_no_app_code() {
+  setup_sandbox; write_env; echo "APP_REF=no-app" >> "$SANDBOX/.env"
+  run_in_sandbox ./deploy.sh; assert_exit 1
+  assert_contains "$OUT" "APP_REF에 앱 코드가 없습니다"; assert_contains "$OUT" "APP_REF=develop"
+  assert_not_contains "$(cat "$FAKE_LOG" 2>/dev/null)" "aws "
+}
+
+# LLM_API_KEY가 비었거나 커밋하지 않은 변경이 있으면 경고만 하고 진행한다. 키 값은 어떤 경우에도 내보내지 않는다
+test_preflight_warns_but_continues_for_empty_llm_key_and_uncommitted_changes() {
+  setup_sandbox; write_env
+  printf '%s\n' "SECRET_KEY=$SECRET_MARKER" "LLM_API_KEY=" > "$APP_FIX/llm-empty.env"
+  echo "APP_ENV_FILE=$APP_FIX/llm-empty.env" >> "$SANDBOX/.env"
+  run_in_sandbox ./deploy.sh --preflight-only; assert_exit 0
+  assert_contains "$OUT" "[WARN]"; assert_contains "$OUT" "LLM_API_KEY"
+  assert_no_secret_leak
+  setup_sandbox; write_env; echo "# 아직 커밋 안 함" >> "$APP_FIX/app/main.py"
+  run_in_sandbox ./deploy.sh --preflight-only; assert_exit 0
+  assert_contains "$OUT" "커밋하지 않은 변경"
+  # 키가 있고 작업 트리가 깨끗하면 경고 없음
+  setup_sandbox; write_env
+  run_in_sandbox ./deploy.sh --preflight-only; assert_exit 0
+  assert_not_contains "$OUT" "[WARN]"; assert_no_secret_leak
+}
+
+# 앱 경로를 비우면 이 프로젝트 기준 ../../../ai_chatbot 을 쓴다(실제 ai_chatbot이 아니라 임시 배치로 확인)
+test_app_src_defaults_to_sibling_checkout() {
+  local base="$TEST_ROOT/layout" out want
+  mkdir -p "$base/mission/b3-1/answers"; make_app_repo "$base/ai_chatbot"
+  want="$(cd "$base" && pwd -P)/ai_chatbot"
+  out="$( (source lib/common.sh; ROOT_DIR="$base/mission/b3-1/answers"; APP_SRC=""; APP_ENV_FILE=""; APP_REF=""
+    resolve_app_source; printf '%s|%s|%s\n' "$APP_SRC" "$APP_ENV_FILE" "$APP_REF") 2>&1)"
+  assert_contains "$out" "$want|$want/.env|HEAD"
+  # 상대 경로는 이 프로젝트(answers) 기준으로 푼다
+  out="$( (source lib/common.sh; ROOT_DIR="$base/mission/b3-1/answers"
+    APP_SRC="../../../ai_chatbot"; APP_ENV_FILE="../../../ai_chatbot/prod.env"; APP_REF=develop
+    resolve_app_source; printf '%s|%s|%s\n' "$APP_SRC" "$APP_ENV_FILE" "$APP_REF") 2>&1)"
+  assert_contains "$out" "$want|$want/prod.env|develop"
+}
+
+# ---------------------------------------------------------------- ai_chatbot 배포: 전송·설치
+
+# .env는 파일 경로로 scp한다(값을 명령줄에 싣지 않는다). 비밀 표식은 호출 기록·증거·화면·상태 어디에도 없다
+test_deploy_uploads_app_env_by_path_and_never_leaks_secret_values() {
+  setup_sandbox; write_env; run_in_sandbox ./deploy.sh; assert_exit 0
+  local L T E; L="$(cat "$FAKE_LOG")"
+  assert_contains "$L" "$APP_FIX/.env ubuntu@203.0.113.10:.b3-1-upload/app.env"
+  assert_contains "$L" "ubuntu@203.0.113.10:.b3-1-upload/app.tar.gz"
+  assert_contains "$L" "ubuntu@203.0.113.10:.b3-1-upload/provision-app.sh"
+  grep '^scp ' "$FAKE_LOG" | grep -q 'StrictHostKeyChecking=accept-new' || fail "scp에 호스트 키 확인 옵션 없음"
+  cmp -s "$APP_FIX/.env" "$REMOTE_DIR/app.env" || fail "서버로 간 .env가 원본 파일과 다름"
+  # 소스는 git archive라 추적하지 않는 .env가 섞이지 않는다
+  T="$(tar -tzf "$REMOTE_DIR/app.tar.gz" 2>&1)"
+  assert_contains "$T" "app/main.py"; assert_contains "$T" "requirements.txt"
+  assert_not_contains "$T" ".env"
+  assert_no_secret_leak
+  E="$(cat "$SANDBOX/evidence/aws/03b-app.txt" 2>/dev/null)"
+  assert_contains "$E" "provision-app.sh"; assert_contains "$E" "<APP_SRC>"; assert_contains "$E" "<APP_ENV_FILE>"
+  assert_not_contains "$E" "$APP_FIX"
+}
+
+# 서버 준비(SSH·user-data 완료) → 업로드 → 설치 → 외부 검증 순서
+test_deploy_app_step_order() {
+  setup_sandbox; write_env; run_in_sandbox ./deploy.sh; assert_exit 0
+  assert_order "run-instances" "user-data.done"
+  assert_order "user-data.done" "scp "
+  assert_order ".b3-1-upload/app.env" "sudo bash .b3-1-upload/provision-app.sh"
+  assert_order "sudo bash .b3-1-upload/provision-app.sh" "http://203.0.113.10/health"
+}
+
+# 배포한 커밋 SHA를 상태 파일에 적고, 같은 커밋·같은 .env면 다시 올리지 않는다. 커밋이나 .env가 바뀌면 다시 배포한다
+test_deploy_records_commit_and_skips_same_commit_redeploy() {
+  setup_sandbox; write_env; run_in_sandbox ./deploy.sh; assert_exit 0
+  local sha1 sha2; sha1="$(git -C "$APP_FIX" rev-parse HEAD)"
+  assert_contains "$(cat "$SANDBOX/state/resources.env")" "APP_COMMIT=$sha1"
+  assert_contains "$(cat "$FAKE_LOG")" "provision-app.sh /home/ubuntu/.b3-1-upload $sha1"
+  : > "$FAKE_LOG"; run_in_sandbox ./deploy.sh; assert_exit 0
+  assert_contains "$OUT" "재배포 생략"
+  assert_not_contains "$(cat "$FAKE_LOG")" "scp "; assert_not_contains "$(cat "$FAKE_LOG")" "provision-app.sh"
+  assert_contains "$(cat "$FAKE_LOG")" "http://203.0.113.10/health"
+  echo "# v2" >> "$APP_FIX/app/main.py"; tgit -C "$APP_FIX" commit -qam "v2"
+  sha2="$(git -C "$APP_FIX" rev-parse HEAD)"
+  : > "$FAKE_LOG"; run_in_sandbox ./deploy.sh; assert_exit 0
+  assert_contains "$(cat "$FAKE_LOG")" "provision-app.sh /home/ubuntu/.b3-1-upload $sha2"
+  assert_contains "$(cat "$SANDBOX/state/resources.env")" "APP_COMMIT=$sha2"
+  # .env만 바뀌어도 다시 올린다(예: 나중에 LLM_API_KEY를 채운 경우)
+  printf 'NAVER_TIMEOUT_SECONDS=5\n' >> "$APP_FIX/.env"
+  : > "$FAKE_LOG"; run_in_sandbox ./deploy.sh; assert_exit 0
+  assert_contains "$(cat "$FAKE_LOG")" ".b3-1-upload/app.env"
+}
+
+# SSH가 아직 안 되면 기다렸다가 진행하고, user-data가 실패했으면 업로드하지 않고 확인 방법을 알려 준다
+test_deploy_waits_for_ssh_then_fails_fast_on_user_data_error() {
+  setup_sandbox; write_env
+  FAKE_SSH_NOT_READY=2 run_in_sandbox ./deploy.sh; assert_exit 0
+  [ "$(grep -c 'user-data.done' "$FAKE_LOG")" -ge 3 ] || fail "접속 실패 뒤 다시 확인하지 않음"
+  assert_contains "$(cat "$FAKE_LOG")" "sudo bash .b3-1-upload/provision-app.sh"
+  setup_sandbox; write_env
+  FAKE_USERDATA_ERROR=1 run_in_sandbox ./deploy.sh; assert_exit 1
+  assert_contains "$OUT" "cloud-init-output.log"; assert_contains "$OUT" "단계 실패"
+  assert_not_contains "$(cat "$FAKE_LOG")" "scp "
+  [ "$(grep -c 'user-data.done' "$FAKE_LOG")" -eq 1 ] || fail "user-data 오류인데 계속 기다림"
+}
+
+# 앱 설치가 실패하면 단계 이름과 함께 멈추고, 커밋을 기록하지 않아 다시 실행하면 설치를 다시 한다
+test_deploy_app_install_failure_is_resumable() {
+  setup_sandbox; write_env
+  FAKE_PROVISION_RC=1 run_in_sandbox ./deploy.sh; assert_exit 1
+  assert_contains "$OUT" "단계 실패: 앱 배포"; assert_contains "$OUT" "03b-app.txt"
+  assert_not_contains "$(cat "$SANDBOX/state/resources.env")" "APP_COMMIT="
+  : > "$FAKE_LOG"; run_in_sandbox ./deploy.sh; assert_exit 0
+  assert_not_contains "$(cat "$FAKE_LOG")" "run-instances"
+  assert_contains "$(cat "$FAKE_LOG")" "sudo bash .b3-1-upload/provision-app.sh"
+  assert_contains "$(cat "$SANDBOX/state/resources.env")" "APP_COMMIT="
+}
+
+# 보안 그룹은 80·22만 연다. 앱 포트 8000은 열지 않고 uvicorn은 127.0.0.1에만 바인딩한다
+test_security_group_has_no_8000_rule() {
+  setup_sandbox; write_env; run_in_sandbox ./deploy.sh; assert_exit 0
+  local A; A="$(grep ' authorize-security-group-ingress ' "$FAKE_LOG")"
+  assert_contains "$A" "FromPort=80,ToPort=80"; assert_contains "$A" "FromPort=22,ToPort=22"
+  assert_not_contains "$A" "8000"
+  [ "$(grep -o 'IpProtocol=' <<< "$A" | wc -l)" -eq 2 ] || fail "인바운드 규칙이 2개가 아님"
+  ! grep -qE -- '--host[ =]0\.0\.0\.0' server/*.sh || fail "uvicorn을 0.0.0.0에 바인딩하면 안 됨"
+  grep -qF -- '--host 127.0.0.1 --port 8000' server/provision-app.sh 2>/dev/null || fail "uvicorn 127.0.0.1:8000 바인딩 없음"
+}
+
+# 서버 설치 스크립트: 127.0.0.1:8000·systemd·.env 600·DB 절대 경로·SECRET_KEY 생성, 비밀값을 찍는 xtrace 없음
+test_provision_app_static() {
+  local f=server/provision-app.sh kw
+  [ -f "$f" ] || { fail "$f 없음"; return; }
+  bash -n "$f" || fail "$f 문법 오류"
+  grep -q 'set -Eeuo pipefail' "$f" || fail "set -Eeuo pipefail 없음"
+  ! grep -qE '^[[:space:]]*set -[a-zA-Z]*x' "$f" || fail "xtrace(set -x)는 비밀값을 찍을 수 있어 금지"
+  grep -qF -- '--host 127.0.0.1 --port 8000 --workers 1' "$f" || fail "uvicorn 실행 인자 없음"
+  for kw in 'User=ubuntu' 'WorkingDirectory=/home/ubuntu/ai_chatbot' 'Restart=always' 'ai-chatbot' \
+    'daemon-reload' 'systemctl enable' 'systemctl restart' 'sqlite:////home/ubuntu/ai_chatbot/app.db' \
+    'token_hex(32)' '0o600' 'requirements.txt' '/health'; do
+    grep -qF -- "$kw" "$f" || fail "$kw 없음"
+  done
+  grep -q '/run/systemd/system' "$f" || fail "systemd 없는 환경(로컬 리허설) 분기 없음"
+}
+
+# ---------------------------------------------------------------- ai_chatbot 배포: 검증
+
+# /health는 앱의 JSON {"status":"ok"}여야 PASS. "OK"만 오면(예전 Nginx 고정 응답) 앱이 응답한 것이 아니므로 FAIL
+test_verify_health_requires_app_json() {
+  setup_sandbox; write_env; run_in_sandbox ./deploy.sh; assert_exit 0
+  run_in_sandbox ./verify.sh; assert_exit 0
+  assert_contains "$(grep -F '외부 GET /health' "$SANDBOX/evidence/aws/04-verify.txt")" "PASS"
+  assert_contains "$(cat "$SANDBOX/evidence/aws/04-verify.txt")" '{"status":"ok"}'
+  FAKE_HEALTH_BODY=OK run_in_sandbox ./verify.sh; assert_exit 1
+  assert_contains "$(grep -F '외부 GET /health' "$SANDBOX/evidence/aws/04-verify.txt")" "FAIL"
+}
+
+# 비로그인 / 는 원래 303(→ /login). 그대로 기록하고, -L로 따라간 로그인 화면 200과 ai-chatbot 서비스 상태를 판정한다
+test_verify_root_redirect_and_follow_and_app_service() {
+  setup_sandbox; write_env; run_in_sandbox ./deploy.sh; : > "$FAKE_LOG"
+  run_in_sandbox ./verify.sh; assert_exit 0
+  local E S; E="$(cat "$SANDBOX/evidence/aws/04-verify.txt")"; S="$(grep '^ssh ' "$FAKE_LOG")"
+  assert_contains "$(grep -F '외부 GET / (원 응답' <<< "$E")" "| 303 | PASS |"
+  assert_contains "$(grep -F '외부 GET -L /' <<< "$E")" "| 200 | PASS |"
+  assert_contains "$(grep -F 'ai-chatbot 서비스' <<< "$E")" "| active | PASS |"
+  assert_contains "$(grep -F '인스턴스 안 curl -L http://localhost' <<< "$E")" "| 200 | PASS |"
+  assert_contains "$(grep -F '인스턴스 안 curl http://localhost/health' <<< "$E")" "PASS"
+  assert_contains "$S" "systemctl is-active ai-chatbot"; assert_contains "$S" "curl -sL"
+  grep '^curl ' "$FAKE_LOG" | grep -q -- '-L' || fail "외부에서 -L로 따라가 보지 않음"
+  FAKE_APP_STATE=failed run_in_sandbox ./verify.sh; assert_exit 1
+  assert_contains "$(grep -F 'ai-chatbot 서비스' "$SANDBOX/evidence/aws/04-verify.txt")" "FAIL"
+}
+
+# LLM API에 닿지 않으면(000) WARN만 남기고 종료 코드는 0(미션 필수 항목이 아니다)
+test_verify_llm_unreachable_is_warning_only() {
+  setup_sandbox; write_env; run_in_sandbox ./deploy.sh
+  FAKE_LLM_CODE=000 run_in_sandbox ./verify.sh; assert_exit 0
+  local E; E="$(cat "$SANDBOX/evidence/aws/04-verify.txt")"
+  assert_contains "$(grep -F 'LLM API' <<< "$E")" "| 000 | WARN |"
+  assert_not_contains "$E" "FAIL"
+  assert_contains "$(grep '^ssh ' "$FAKE_LOG")" "https://copa.codyssey.kr/v1/models"
+  run_in_sandbox ./verify.sh; assert_exit 0
+  assert_contains "$(grep -F 'LLM API' "$SANDBOX/evidence/aws/04-verify.txt")" "| 401 | PASS |"
 }
 
 # ---------------------------------------------------------------- 실행

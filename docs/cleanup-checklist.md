@@ -3,6 +3,7 @@
 > 실습이 끝나면 `./cleanup.sh`를 실행하고, 아래 항목을 하나씩 확인해 체크한다.
 > 근거는 `cleanup.sh`가 남기는 [`evidence/aws/05-cleanup.txt`](../evidence/aws/05-cleanup.txt)다. 이 파일은 AWS에서 실행하면 자동으로 생긴다.
 > **체크박스는 아직 비어 있다 — ⏳ AWS 실행 후 체크.**
+> 서버의 SQLite(`/home/ubuntu/ai_chatbot/app.db`, 앱의 가입·대화 기록)는 루트 EBS와 함께 삭제된다(별도 DB 리소스 없음). 남길 데이터가 있으면 정리 전에 `scp`로 받아 둔다.
 
 ## 정리 추적 기준
 

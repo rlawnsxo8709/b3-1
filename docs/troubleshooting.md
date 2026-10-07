@@ -191,7 +191,11 @@ sed -i "s|^SSH_CIDR=.*|SSH_CIDR=$NEW|" state/resources.env
 | 앱 포트 8000이 인터넷에 노출되는 문제(ai_chatbot의 `docs/DEPLOY.md`는 8000을 열라고 한다) | SG에 8000을 넣지 않고(테스트 `test_security_group_has_no_8000_rule`), uvicorn을 `127.0.0.1`에만 바인딩(`server/provision-app.sh:25`). 바깥 요청은 Nginx 80이 넘긴다 |
 | 앱 키를 user-data에 넣으면 인스턴스 메타데이터·콘솔에 보이는 문제 | user-data에는 비밀값을 넣지 않고, 앱 `.env`는 SSH(내 IP/32)로 파일째 보내 서버에서 600으로 둔다. 테스트가 비밀 표식이 로그·증거·화면에 없음을 확인 |
 | user-data(Nginx·python3-venv 설치)가 끝나기 전에 앱을 설치하는 문제 | user-data 마지막에 `/var/lib/b3-1/user-data.done`을 만들고, `deploy.sh`가 SSH로 이 표식을 확인한 뒤 올린다. `cloud-init status: error`면 기다리지 않고 멈춤 |
-| `SECRET_KEY`가 비었거나 16자 미만이면 앱이 시작하지 않는 문제(ai_chatbot `app/config.py`) | `provision-app.sh`가 `secrets.token_hex(32)`로 만든다. 리허설에서 비운 `.env`로 확인(길이 64) |
+| `SECRET_KEY`가 비었거나 16자 미만이면 앱이 시작하지 않는 문제(ai_chatbot `app/config.py`) | `provision-app.sh`가 서버의 기존 값(16자 이상)을 유지하고, 없을 때만 `secrets.token_hex(32)`로 만든다. 재배포마다 새로 만들면 전원 로그아웃되므로 유지한다. 리허설에서 유지(이전 쿠키로 200)와 생성(길이 64, 이전 쿠키 303)을 모두 확인 |
+| user-data가 실패했는데 `./deploy.sh`만 다시 실행해 같은 곳에서 계속 멈추는 문제(user-data는 첫 부팅 1회만 실행) | `cloud-init status: error`면 기다리지 않고 멈추고, `sudo bash /var/lib/cloud/instance/user-data.txt`로 수동 재실행 후 `./deploy.sh`, 아니면 `./cleanup.sh` → `./deploy.sh`를 안내 |
+| 같은 퍼블릭 IP를 다른 인스턴스가 받아 SSH 호스트 키가 달라지는 경우를 일시 오류처럼 계속 재시도하는 문제 | `Host key verification failed`면 바로 멈추고 `ssh-keygen -f state/known_hosts -R <IP>` 안내(확인 없이 지우지 말 것 — 중간자 공격일 수도 있다) |
+| SG 22번 허용 IP가 지금 내 IP와 달라 SSH가 막혔는데 최대 약 20분을 그냥 기다리는 문제 | 연결 시간 초과가 6번 연속이면 SSH 허용 IP를 확인하라고 경고 |
+| `ssh`·`scp`가 없는 PC에서 리소스를 다 만든 뒤에야 멈추는 문제 | 사전 점검에서 확인하고 AWS를 부르기 전에 멈춤 |
 | `DATABASE_URL=sqlite:///./app.db`(상대 경로)가 실행 폴더에 따라 다른 DB를 만드는 문제 | `sqlite:////home/ubuntu/ai_chatbot/app.db`로 바꿔 둔다 |
 | LLM 응답(최대 50초)과 트렌드 조회가 Nginx 기본 읽기 타임아웃(60초)을 넘겨 504가 나는 문제 | `proxy_read_timeout 90s` (`server/user-data.sh:52`) |
 | 재배포 때 이전 커밋에서 지운 파일이 남는 문제 | 소스를 풀기 전에 `.venv`·`.env`·`app.db*`만 남기고 비운다(`server/provision-app.sh:64`) |

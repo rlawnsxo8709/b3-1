@@ -1,13 +1,17 @@
 #!/usr/bin/env bash
 # 테스트용 가짜 ssh — 원격 명령 문자열을 "$FAKE_LOG"에 남기고 원격 명령의 종류에 따라 정해진 결과를 흉내 낸다.
-#   준비 확인(…user-data.done…)        FAKE_SSH_NOT_READY=N   처음 N번은 접속 실패(exit 255)
+#   준비 확인(…user-data.done…)        FAKE_SSH_NOT_READY=N   처음 N번은 접속 거부(exit 255)
+#                                       FAKE_SSH_TIMEOUTS=N    처음 N번은 연결 시간 초과(exit 255, SG 22 차단과 같은 증상)
 #                                       FAKE_USERDATA_ERROR=1  cloud-init이 오류로 끝남(exit 3)
+#                                       FAKE_USERDATA_PENDING=N  처음 N번은 user-data 진행 중(exit 1)
+#                                       FAKE_READY_RC=코드     접속 뒤 준비 확인 명령이 이 코드로 끝남(예상 밖 코드 시험)
 #   앱 설치(…provision-app.sh…)        FAKE_PROVISION_RC=코드  설치 스크립트의 종료 코드(기본 0)
 #   verify 점검(…systemctl is-active nginx…)  key=value 줄을 돌려준다
 #                                       FAKE_APP_STATE=상태    ai-chatbot 서비스 상태(기본 active)
 #                                       FAKE_LLM_CODE=코드     LLM API 도달성 HTTP 코드(기본 401, 000=도달 불가)
 #   그 밖의 원격 명령(업로드 폴더 준비 등)은 출력 없이 성공
 #   FAKE_SSH_FAIL=1  모든 접속이 실패(exit 255)
+#   FAKE_SSH_HOSTKEY_CHANGED=1  known_hosts의 호스트 키와 달라 접속 거부(exit 255)
 set -u
 log="${FAKE_LOG:-/dev/null}"
 printf 'ssh %s\n' "$*" >> "$log"
@@ -16,11 +20,24 @@ if [ "${FAKE_SSH_FAIL:-0}" = 1 ]; then
   exit 255
 fi
 
+if [ "${FAKE_SSH_HOSTKEY_CHANGED:-0}" = 1 ]; then
+  printf '%s\n' '@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@' \
+    '@    WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!     @' \
+    '@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@' \
+    'Host key for 203.0.113.10 has changed and you have requested strict checking.' \
+    'Host key verification failed.' >&2
+  exit 255
+fi
+
 cmd="${!#}"
 case "$cmd" in
   *user-data.done*)
     # 이번 호출까지 포함한 준비 확인 횟수
     n="$(grep -c 'user-data.done' "$log" 2> /dev/null || echo 0)"
+    if [ "$n" -le "${FAKE_SSH_TIMEOUTS:-0}" ]; then
+      echo "ssh: connect to host 203.0.113.10 port 22: Connection timed out" >&2
+      exit 255
+    fi
     if [ "$n" -le "${FAKE_SSH_NOT_READY:-0}" ]; then
       echo "ssh: connect to host 203.0.113.10 port 22: Connection refused" >&2
       exit 255
@@ -28,6 +45,13 @@ case "$cmd" in
     if [ "${FAKE_USERDATA_ERROR:-0}" = 1 ]; then
       echo "status: error" >&2
       exit 3
+    fi
+    if [ "$n" -le "${FAKE_USERDATA_PENDING:-0}" ]; then
+      exit 1
+    fi
+    if [ -n "${FAKE_READY_RC:-}" ]; then
+      echo "bash: line 1: cloud-init: command not found (fake)" >&2
+      exit "$FAKE_READY_RC"
     fi
     exit 0
     ;;

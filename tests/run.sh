@@ -754,6 +754,8 @@ test_preflight_warns_but_continues_for_empty_llm_key_and_uncommitted_changes() {
   echo "APP_ENV_FILE=$APP_FIX/llm-empty.env" >> "$SANDBOX/.env"
   run_in_sandbox ./deploy.sh --preflight-only; assert_exit 0
   assert_contains "$OUT" "[WARN]"; assert_contains "$OUT" "LLM_API_KEY"
+  # 다시 실행하면 .env만이 아니라 소스와 .env를 다시 올려 설치를 다시 한다(venv·DB 유지)
+  assert_contains "$OUT" "소스와 .env를 다시 올려"; assert_not_contains "$OUT" ".env만 다시 올립니다"
   assert_no_secret_leak
   setup_sandbox; write_env; echo "# 아직 커밋 안 함" >> "$APP_FIX/app/main.py"
   run_in_sandbox ./deploy.sh --preflight-only; assert_exit 0
@@ -920,6 +922,158 @@ test_verify_llm_unreachable_is_warning_only() {
   assert_contains "$(grep '^ssh ' "$FAKE_LOG")" "https://copa.codyssey.kr/v1/models"
   run_in_sandbox ./verify.sh; assert_exit 0
   assert_contains "$(grep -F 'LLM API' "$SANDBOX/evidence/aws/04-verify.txt")" "| 401 | PASS |"
+}
+
+# ---------------------------------------------------------------- Fix round 1: 리뷰 후속 회귀 테스트 (ai_chatbot 배포)
+
+# PATH에서 지정한 명령만 뺀 실행 경로 폴더를 만든다(가짜 명령 → 시스템 명령 순으로 링크, 앞의 것이 이긴다)
+path_without() {
+  local dir="$SANDBOX-bin" d f name skip=" $* " files
+  mkdir -p "$dir"
+  local IFS=:
+  for d in "$SANDBOX/tests/fake-bin" $PATH; do
+    [ -d "$d" ] || continue
+    files=()
+    for f in "$d"/*; do
+      name="${f##*/}"
+      [ -x "$f" ] && [ ! -d "$f" ] && [ ! -e "$dir/$name" ] || continue
+      [[ "$skip" == *" $name "* ]] && continue
+      files+=("$f")
+    done
+    if [ "${#files[@]}" -gt 0 ]; then ln -s "${files[@]}" "$dir/" 2> /dev/null || true; fi
+  done
+  printf '%s' "$dir"
+}
+
+# [1] user-data(첫 부팅 1회)가 실패하면 "다시 실행하면 이어서"가 아니라 수동 재실행 또는 정리 후 재배포를 안내한다
+test_deploy_user_data_failure_explains_manual_rerun_or_cleanup() {
+  setup_sandbox; write_env
+  FAKE_USERDATA_ERROR=1 run_in_sandbox ./deploy.sh; assert_exit 1
+  assert_contains "$OUT" "sudo bash /var/lib/cloud/instance/user-data.txt"
+  assert_contains "$OUT" "ssh -i state/b3-1-key.pem ubuntu@203.0.113.10"
+  assert_contains "$OUT" "./cleanup.sh → ./deploy.sh"
+  assert_not_contains "$OUT" "다시 실행하면 이어서 진행합니다"
+}
+
+# [2] 앱 .env가 심볼릭 링크여도 링크 대상이 바뀌면 다시 올린다(stat -L)
+test_deploy_redeploys_when_symlinked_app_env_target_changes() {
+  setup_sandbox; write_env
+  cp "$APP_FIX/.env" "$APP_FIX/real.env"; ln -s real.env "$APP_FIX/link.env"
+  echo "APP_ENV_FILE=$APP_FIX/link.env" >> "$SANDBOX/.env"
+  run_in_sandbox ./deploy.sh; assert_exit 0
+  printf 'NAVER_TIMEOUT_SECONDS=7\n' >> "$APP_FIX/real.env"
+  : > "$FAKE_LOG"; run_in_sandbox ./deploy.sh; assert_exit 0
+  assert_contains "$(cat "$FAKE_LOG")" "sudo bash .b3-1-upload/provision-app.sh"
+  assert_not_contains "$OUT" "재배포 생략"
+}
+
+# [8] 같은 커밋·같은 내용이라도 앱 .env의 수정 시각을 바꾸면(touch) 다시 설치한다(README에 적은 강제 재설치 방법)
+test_deploy_touching_app_env_forces_reinstall() {
+  setup_sandbox; write_env; run_in_sandbox ./deploy.sh; assert_exit 0
+  : > "$FAKE_LOG"; run_in_sandbox ./deploy.sh; assert_contains "$OUT" "재배포 생략"
+  touch -d '2001-01-01 00:00:00' "$APP_FIX/.env"
+  : > "$FAKE_LOG"; run_in_sandbox ./deploy.sh; assert_exit 0
+  assert_contains "$(cat "$FAKE_LOG")" "sudo bash .b3-1-upload/provision-app.sh"
+}
+
+# [3] 업로드한 .env의 SECRET_KEY가 비었으면 서버의 기존 값(16자 이상)을 유지하고, 없을 때만 새로 만든다.
+#     provision-app.sh 안의 .env 보정 코드를 꺼내 실제로 돌린다(dotenv는 최소 대역으로 대신한다)
+test_provision_env_fixup_keeps_existing_server_secret_key() {
+  local t="$TEST_ROOT/fixup" out key
+  mkdir -p "$t/stub/dotenv"
+  printf '%s\n' \
+    'def dotenv_values(path):' \
+    '    out = {}' \
+    '    for line in open(path, encoding="utf-8-sig").read().splitlines():' \
+    '        line = line.strip()' \
+    '        if not line or line.startswith("#") or "=" not in line:' \
+    '            continue' \
+    '        k, v = line.split("=", 1)' \
+    '        k = k.strip()' \
+    '        if k.startswith("export "):' \
+    '            k = k[len("export "):].strip()' \
+    '        v = v.strip()' \
+    '        if len(v) >= 2 and v[0] == v[-1] and v[0] in "\x27\"":' \
+    '            v = v[1:-1]' \
+    '        out[k] = v' \
+    '    return out' > "$t/stub/dotenv/__init__.py"
+  sed -n "/<< 'PY'\$/,/^PY\$/p" server/provision-app.sh | sed '1d;$d' > "$t/fixup.py"
+  [ -s "$t/fixup.py" ] || { fail ".env 보정 코드를 찾지 못함"; return; }
+  printf '%s\n' "SECRET_KEY=" "DATABASE_URL=sqlite:///./app.db" "LLM_API_KEY=$LLM_MARKER" > "$t/upload.env"
+  # (가) 서버에 기존 .env가 없으면 새로 만든다(64자 16진수)
+  out="$(cd "$t" && PYTHONPATH="$t/stub" python3 fixup.py upload.env new1.env 'sqlite:////home/ubuntu/ai_chatbot/app.db' none.env 2>&1)"
+  key="$(sed -n 's/^SECRET_KEY=//p' "$t/new1.env" 2>/dev/null)"
+  [[ "$key" =~ ^[0-9a-f]{64}$ ]] || fail "기존 .env가 없는데 64자 키를 만들지 않음"
+  assert_contains "$out" "새로 생성"
+  assert_contains "$(cat "$t/new1.env" 2>/dev/null)" "DATABASE_URL=sqlite:////home/ubuntu/ai_chatbot/app.db"
+  [ "$(grep -c '^DATABASE_URL=' "$t/new1.env" 2>/dev/null)" = 1 ] || fail "DATABASE_URL이 한 줄이 아님"
+  [ "$(stat -c %a "$t/new1.env" 2>/dev/null)" = 600 ] || fail ".env 권한이 600이 아님"
+  # (나) 서버에 기존 값이 있으면 그대로 유지한다(재배포해도 로그인 세션이 풀리지 않게)
+  printf '%s\n' "SECRET_KEY=$SECRET_MARKER" "DATABASE_URL=sqlite:////home/ubuntu/ai_chatbot/app.db" > "$t/old.env"
+  out="$(cd "$t" && PYTHONPATH="$t/stub" python3 fixup.py upload.env new2.env 'sqlite:////home/ubuntu/ai_chatbot/app.db' old.env 2>&1)"
+  assert_contains "$(cat "$t/new2.env" 2>/dev/null)" "SECRET_KEY=$SECRET_MARKER"
+  assert_contains "$out" "기존 값 유지"
+  # (다) 업로드한 .env에 16자 이상 키가 있으면 그것을 쓴다
+  printf '%s\n' "SECRET_KEY=uploaded-key-0123456789" > "$t/upload2.env"
+  out="$(cd "$t" && PYTHONPATH="$t/stub" python3 fixup.py upload2.env new3.env 'sqlite:////x/app.db' old.env 2>&1)"
+  assert_contains "$(cat "$t/new3.env" 2>/dev/null)" "SECRET_KEY=uploaded-key-0123456789"
+  assert_not_contains "$(cat "$t/new3.env" 2>/dev/null)" "$SECRET_MARKER"
+  # 어떤 경우에도 키 값은 출력하지 않는다
+  assert_not_contains "$out" "uploaded-key"; assert_not_contains "$out" "$SECRET_MARKER"; assert_not_contains "$out" "$LLM_MARKER"
+}
+
+# [5] ssh·scp가 없으면 리소스를 만든 뒤 10분을 기다리는 대신 AWS를 부르기 전에 멈춘다
+test_deploy_stops_before_aws_without_ssh_or_scp() {
+  setup_sandbox; write_env
+  local nossh; nossh="$(path_without ssh scp)"
+  run_in_sandbox_env PATH="$nossh" -- ./deploy.sh; assert_exit 1
+  assert_contains "$OUT" "ssh"; assert_contains "$OUT" "openssh-client"
+  assert_not_contains "$(cat "$FAKE_LOG" 2>/dev/null)" "aws "
+}
+
+# [5] 준비 확인: 1(user-data 진행 중)은 기다리고, 예상 밖 종료 코드는 진행 중으로 보지 않고 오류로 멈춘다
+test_deploy_ready_check_waits_on_pending_and_fails_on_unexpected_code() {
+  setup_sandbox; write_env
+  FAKE_USERDATA_PENDING=2 run_in_sandbox ./deploy.sh; assert_exit 0
+  assert_contains "$OUT" "user-data 진행 중"
+  [ "$(grep -c 'user-data.done' "$FAKE_LOG")" -ge 3 ] || fail "진행 중(1) 뒤 다시 확인하지 않음"
+  setup_sandbox; write_env
+  FAKE_READY_RC=127 run_in_sandbox ./deploy.sh; assert_exit 1
+  assert_contains "$OUT" "예상하지 못한 종료 코드(127)"
+  assert_not_contains "$(cat "$FAKE_LOG")" "scp "
+  [ "$(grep -c 'user-data.done' "$FAKE_LOG")" -eq 1 ] || fail "예상 밖 코드인데 계속 기다림"
+}
+
+# [6] 호스트 키가 바뀌었으면 재시도하지 않고 known_hosts 정리 방법을 알려 준다
+test_deploy_host_key_change_stops_with_known_hosts_fix() {
+  setup_sandbox; write_env
+  FAKE_SSH_HOSTKEY_CHANGED=1 run_in_sandbox ./deploy.sh; assert_exit 1
+  assert_contains "$OUT" "ssh-keygen -f state/known_hosts -R 203.0.113.10"
+  [ "$(grep -c 'user-data.done' "$FAKE_LOG")" -eq 1 ] || fail "호스트 키 오류인데 다시 시도함"
+  assert_not_contains "$(cat "$FAKE_LOG")" "scp "
+}
+
+# [6] 연결 시간 초과가 6번 연속이면 SG 22번 허용 IP를 확인하라고 경고한다(거부·성공은 경고 없음)
+test_deploy_warns_about_ssh_source_ip_after_repeated_timeouts() {
+  setup_sandbox; write_env
+  FAKE_SSH_TIMEOUTS=7 run_in_sandbox ./deploy.sh; assert_exit 0
+  assert_contains "$OUT" "6번 연속"; assert_contains "$OUT" "SSH 허용 IP"
+  [ "$(grep -c '6번 연속' <<< "$OUT")" -eq 1 ] || fail "경고를 한 번만 내야 함"
+  setup_sandbox; write_env
+  FAKE_SSH_NOT_READY=7 run_in_sandbox ./deploy.sh; assert_exit 0
+  assert_not_contains "$OUT" "6번 연속"
+}
+
+# [7] 증거 마스킹 파이프는 줄 단위로 넘긴다(앱 설치처럼 오래 걸리는 출력이 끝날 때까지 화면에 안 보이는 문제 방지)
+test_mask_stream_passes_lines_without_waiting() {
+  if ! sed -u -e '' < /dev/null > /dev/null 2>&1; then
+    echo "    (이 환경의 sed는 -u가 없어 확인을 건너뜀)"
+    return 0
+  fi
+  local got
+  got="$( (source lib/common.sh; ROOT_DIR=/nonexistent
+    { echo first; sleep 3; echo second; } | mask_stream | { IFS= read -r -t 2 l && printf 'got:%s' "$l"; }) 2>&1)"
+  assert_contains "$got" "got:first"
 }
 
 # ---------------------------------------------------------------- 실행

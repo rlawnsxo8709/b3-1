@@ -1,6 +1,7 @@
 # shellcheck shell=bash
 # B3-1 공통 함수 — deploy.sh·verify.sh·cleanup.sh가 source 한다.
-# .env 로드, 로그, 상태 파일(state/resources.env), 증거 기록(evidence/aws), 태그, 사전 점검을 모은다.
+# .env 로드, 로그, 상태 파일(state/resources.env), 증거 기록(evidence/aws), 태그, 사전 점검,
+# 배포할 앱(ai_chatbot) 소스 확인, SSH 옵션을 모은다.
 
 # mapfile 등 bash 4 기능을 쓴다. macOS 기본 bash(3.2)로 배포만 되고 정리가 막히는 일을 아무것도 하기 전에 막는다
 check_bash_version() {
@@ -22,7 +23,7 @@ CALLER_ARN=""
 MY_IP_SOURCE=""
 
 # .env에서 받아들이는 키. 그 밖의 키(PATH 등)는 무시해 실수로 실행 환경을 망가뜨리지 않게 한다
-ENV_KEYS=" AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_REGION MY_IP INSTANCE_TYPE AZ PROJECT "
+ENV_KEYS=" AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_REGION MY_IP INSTANCE_TYPE AZ PROJECT APP_SRC APP_ENV_FILE APP_REF "
 
 log() { printf '[INFO] %s\n' "$*" >&2; }
 warn() { printf '[WARN] %s\n' "$*" >&2; }
@@ -152,10 +153,15 @@ mask_ip() { printf '%s.*.*' "${1%.*.*}"; }
 sed_escape() { printf '%s' "$1" | sed 's#[][\.*^$|+?(){}/]#\\&#g'; }
 
 # 공개 저장소에 올릴 증거에서 계정 ID와 개인 IP를 가리고, 절대 경로를 프로젝트 기준 경로로 바꾼다.
+# 앱 체크아웃(APP_SRC)과 앱 .env(APP_ENV_FILE)의 개인 경로는 <APP_SRC>·<APP_ENV_FILE>로 바꾼다.
 # 계정 ID·IP는 숫자 경계를 지켜 다른 값(예: 11.2.3.45)의 일부를 깨뜨리지 않고,
 # 경계 글자를 함께 소비하므로 붙어 있는 값(1.2.3.4,1.2.3.4)까지 바뀌도록 t 분기로 반복한다
 mask_stream() {
-  local args=(-E -e "s|$(sed_escape "$ROOT_DIR/")|./|g") ip="${MY_IP:-}"
+  local args=(-E) ip="${MY_IP:-}"
+  # 더 구체적인 경로부터 바꾼다(.env가 앱 폴더 안에 있으면 <APP_ENV_FILE>로 남도록)
+  if [ -n "${APP_ENV_FILE:-}" ]; then args+=(-e "s|$(sed_escape "$APP_ENV_FILE")|<APP_ENV_FILE>|g"); fi
+  if [ -n "${APP_SRC:-}" ]; then args+=(-e "s|$(sed_escape "$APP_SRC")|<APP_SRC>|g"); fi
+  args+=(-e "s|$(sed_escape "$ROOT_DIR/")|./|g")
   # verify·cleanup은 detect_my_ip를 거치지 않으므로 .env 값(예: 1.2.3.4/32)을 여기서 정규화하고,
   # IPv4가 아니면 치환하지 않는다(치환 결과가 다시 일치하면 t 분기가 끝나지 않는다)
   ip="${ip%/32}"
@@ -247,6 +253,109 @@ detect_my_ip() {
   log "SSH 허용 IP: ${MY_IP}/32 ($from)"
 }
 
+# ------------------------------------------------------------------ 배포할 앱(ai_chatbot)
+
+APP_COMMIT_SHA=""
+
+# 상대 경로를 이 프로젝트(ROOT_DIR) 기준 절대 경로로 바꾼다. ~ 는 홈으로 푼다. 폴더가 있으면 실제 경로로 정규화한다
+abs_from_root() {
+  local p="$1" d
+  # shellcheck disable=SC2088 # .env 값은 셸이 ~를 펼치지 않으므로 글자 그대로의 ~를 찾아 직접 바꾼다
+  case "$p" in
+    "~" | "~/"*) p="$HOME${p#\~}" ;;
+  esac
+  case "$p" in
+    /*) ;;
+    *) p="$ROOT_DIR/$p" ;;
+  esac
+  if [ -d "$p" ]; then
+    p="$(cd "$p" && pwd -P)"
+  elif [ -d "$(dirname "$p")" ]; then
+    d="$(cd "$(dirname "$p")" && pwd -P)"
+    p="$d/$(basename "$p")"
+  fi
+  printf '%s' "$p"
+}
+
+# APP_SRC(앱 git 체크아웃, 비우면 이 프로젝트 기준 ../../../ai_chatbot), APP_ENV_FILE(기본 $APP_SRC/.env),
+# APP_REF(기본 HEAD)를 정한다
+resolve_app_source() {
+  APP_SRC="$(abs_from_root "${APP_SRC:-../../../ai_chatbot}")"
+  APP_ENV_FILE="$(abs_from_root "${APP_ENV_FILE:-$APP_SRC/.env}")"
+  APP_REF="${APP_REF:-HEAD}"
+  export APP_SRC APP_ENV_FILE APP_REF
+}
+
+# env 파일 FILE에서 KEY의 값을 변수 이름 VAR에 담는다(마지막 줄이 이긴다). 값은 화면에 내지 않는다
+env_file_get() {
+  local file="$1" key="$2" line found=""
+  while IFS= read -r line || [ -n "$line" ]; do
+    line="${line%$'\r'}"
+    if [[ "$line" =~ ^[[:space:]]*(export[[:space:]]+)?([A-Za-z_][A-Za-z0-9_]*)[[:space:]]*=[[:space:]]*(.*)$ ]] &&
+      [ "${BASH_REMATCH[2]}" = "$key" ]; then
+      found="$(env_value "${BASH_REMATCH[3]}")"
+    fi
+  done < "$file"
+  printf -v "$3" '%s' "$found"
+}
+
+# 앱 소스와 .env를 AWS를 부르기 전에 확인한다. 비밀값은 출력하지 않고 "있음/비어 있음"만 알린다
+check_app_source() {
+  local top secret="" llm="" naver_id="" naver_secret=""
+  resolve_app_source
+  command -v git > /dev/null 2>&1 || die "git이 필요합니다. 배포할 앱 소스를 git archive로 묶습니다. 예: sudo apt-get install -y git"
+  if [ ! -d "$APP_SRC" ]; then
+    die "배포할 앱 폴더가 없습니다(APP_SRC=$APP_SRC). ai_chatbot을 clone한 경로를 .env의 APP_SRC에 넣으세요. 비워 두면 이 프로젝트 기준 ../../../ai_chatbot 을 씁니다."
+  fi
+  top="$(git -C "$APP_SRC" rev-parse --show-toplevel 2> /dev/null || true)"
+  if [ -z "$top" ] || [ "$(cd "$top" && pwd -P)" != "$APP_SRC" ]; then
+    die "APP_SRC=$APP_SRC 는 git 저장소(최상위 폴더)가 아닙니다. git clone https://github.com/L-jy16/ai_chatbot.git 으로 받은 폴더를 APP_SRC에 넣으세요."
+  fi
+  APP_COMMIT_SHA="$(git -C "$APP_SRC" rev-parse --verify --quiet "${APP_REF}^{commit}" 2> /dev/null || true)"
+  if [ -z "$APP_COMMIT_SHA" ]; then
+    die "APP_REF=$APP_REF 에 해당하는 커밋을 APP_SRC에서 찾지 못했습니다. 브랜치·태그·커밋 이름을 확인하세요(예: APP_REF=develop, 원격 브랜치는 git fetch 후 origin/develop)."
+  fi
+  if ! git -C "$APP_SRC" cat-file -e "$APP_COMMIT_SHA:app/main.py" 2> /dev/null ||
+    ! git -C "$APP_SRC" cat-file -e "$APP_COMMIT_SHA:requirements.txt" 2> /dev/null; then
+    die "APP_REF에 앱 코드가 없습니다(APP_REF=$APP_REF 에 app/main.py·requirements.txt 없음). ai_chatbot은 develop 브랜치에 코드가 있습니다(APP_REF=develop). main은 초기 커밋뿐입니다."
+  fi
+  if [ ! -f "$APP_ENV_FILE" ] || [ ! -r "$APP_ENV_FILE" ]; then
+    die "앱 .env가 없습니다(APP_ENV_FILE=$APP_ENV_FILE). ai_chatbot 폴더에서 'cp .env.example .env' 후 LLM_API_KEY·NAVER_CLIENT_ID·NAVER_CLIENT_SECRET를 채우세요(SECRET_KEY는 비워 두면 서버가 만듭니다). 다른 위치의 파일이면 .env의 APP_ENV_FILE에 경로를 넣으세요."
+  fi
+  if [ "$APP_REF" = "HEAD" ] && [ -n "$(git -C "$APP_SRC" status --porcelain --untracked-files=no 2> /dev/null)" ]; then
+    warn "APP_SRC에 커밋하지 않은 변경이 있습니다. 배포는 커밋된 내용(git archive)만 올리므로 그 변경은 서버에 가지 않습니다."
+  fi
+  env_file_get "$APP_ENV_FILE" SECRET_KEY secret
+  env_file_get "$APP_ENV_FILE" LLM_API_KEY llm
+  env_file_get "$APP_ENV_FILE" NAVER_CLIENT_ID naver_id
+  env_file_get "$APP_ENV_FILE" NAVER_CLIENT_SECRET naver_secret
+  log "배포할 앱: APP_REF=$APP_REF → 커밋 ${APP_COMMIT_SHA:0:12} ($(git -C "$APP_SRC" log -1 --format=%s "$APP_COMMIT_SHA" 2> /dev/null | cut -c1-60))"
+  log "앱 .env 항목(값은 표시하지 않음): SECRET_KEY $([ "${#secret}" -ge 16 ] && echo 있음 || echo '비어 있음·16자 미만 → 서버에서 생성') / LLM_API_KEY $([ -n "$llm" ] && echo 있음 || echo 비어 있음) / NAVER 키 $([ -n "$naver_id" ] && [ -n "$naver_secret" ] && echo 있음 || echo 비어 있음)"
+  if [ -z "$llm" ]; then
+    warn "앱 .env의 LLM_API_KEY가 비어 있습니다. 배포는 진행하지만 채팅(AI 답변)만 동작하지 않습니다(502 AI_ERROR). 키를 채운 뒤 ./deploy.sh를 다시 실행하면 .env만 다시 올립니다."
+  fi
+  secret="" llm="" naver_id="" naver_secret=""
+}
+
+# 앱 .env가 바뀌었는지 알기 위한 표식(수정 시각:크기). 내용에서 만들지 않으므로 비밀값과 무관하다
+app_env_stamp() {
+  stat -c '%Y:%s' "$APP_ENV_FILE" 2> /dev/null || echo unknown
+}
+
+# ------------------------------------------------------------------ SSH
+
+# deploy·verify가 같이 쓰는 SSH·scp 옵션. 첫 접속의 호스트 키는 state/known_hosts에 저장하고(이후 바뀌면 거부),
+# 비밀번호 프롬프트 없이(BatchMode) 이 키만 쓴다
+ssh_setup() {
+  local key_name
+  key_name="$(state_get KEY_NAME)"
+  SSH_PEM="$STATE_DIR/${key_name:-$PROJECT-key}.pem"
+  # shellcheck disable=SC2034 # deploy.sh·verify.sh가 쓴다
+  SSH_OPTS=(-i "$SSH_PEM" -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="$STATE_DIR/known_hosts"
+    -o ConnectTimeout=10 -o BatchMode=yes -o IdentitiesOnly=yes -o LogLevel=ERROR
+    -o ServerAliveInterval=15 -o ServerAliveCountMax=8)
+}
+
 # ------------------------------------------------------------------ 사전 점검
 
 # 키로 누가 호출하는지 확인한다. 루트 계정이면 미션 제약 위반이므로 중단한다
@@ -280,14 +389,25 @@ write_identity_evidence() {
   } | mask_stream >> "$EVIDENCE_DIR/00-identity.txt"
 }
 
-# .env 로드 → aws CLI 확보 → 실행 주체 확인(루트 거부) → 내 IP 확인 → 00-identity 증거.
+# .env 로드 → (--app) 앱 소스·.env 확인 → aws CLI 확보 → 실행 주체 확인(루트 거부) → 내 IP 확인 → 00-identity 증거.
+# --app: 배포할 앱을 AWS 호출 전에 확인한다(deploy.sh)
 # --no-ip: 내 IP가 필요 없는 정리 작업용(감지 실패로 정리가 막히지 않게 한다)
 preflight() {
+  local want_ip=1 want_app=0 a
+  for a in "$@"; do
+    case "$a" in
+      --no-ip) want_ip=0 ;;
+      --app) want_app=1 ;;
+    esac
+  done
   load_env
+  if [ "$want_app" = 1 ]; then
+    check_app_source
+  fi
   command -v curl > /dev/null 2>&1 || die "curl이 필요합니다. 예: sudo apt-get install -y curl"
   ensure_awscli
   check_identity
-  if [ "${1:-}" != "--no-ip" ]; then
+  if [ "$want_ip" = 1 ]; then
     detect_my_ip
     write_identity_evidence
   fi

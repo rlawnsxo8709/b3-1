@@ -2,7 +2,7 @@
 # B3-1 앱 설치 — deploy.sh가 scp로 올린 뒤 SSH로 실행한다:  sudo bash provision-app.sh <업로드 폴더> [커밋]
 #   업로드 폴더: app.tar.gz(ai_chatbot의 git archive), app.env(ai_chatbot의 .env), 이 스크립트
 # 하는 일: 소스 교체(.venv·.env·app.db 유지) → venv·pip 설치 → .env 보정(600, DATABASE_URL 절대 경로,
-#          SECRET_KEY가 비었거나 16자 미만이면 새로 생성) → systemd ai-chatbot.service(uvicorn 127.0.0.1:8000) 등록·재시작
+#          SECRET_KEY가 비었거나 16자 미만이면 서버의 기존 값 유지, 없으면 새로 생성) → systemd ai-chatbot.service(uvicorn 127.0.0.1:8000) 등록·재시작
 #          → 서버 안 /health 대기
 # 비밀값은 출력하지 않는다(set -x 금지, .env 항목은 "있음/비어 있음"만). 여러 번 실행해도 안전하다.
 # 로컬 리허설(local/rehearsal.sh)도 같은 파일을 컨테이너에서 실행한다(systemd가 없으면 같은 명령을 백그라운드로 띄운다).
@@ -88,9 +88,10 @@ log "의존성 설치 완료: $(as_app "$APP_DIR/.venv/bin/pip" freeze --disable
   grep -iE '^(fastapi|uvicorn|sqlalchemy|pydantic-settings)==' | paste -sd ' ' - || true)"
 
 # 3) .env — 서버 경로에 맞게 고치고 소유자만 읽게(600) 둔다. 앱과 같은 파서(python-dotenv)로 읽는다.
-#    DATABASE_URL은 절대 경로로, SECRET_KEY가 비었거나 16자 미만이면 secrets.token_hex(32)로 새로 만든다.
+#    DATABASE_URL은 절대 경로로 바꾼다. 올린 .env의 SECRET_KEY가 비었거나 16자 미만이면 서버의 기존 .env 값
+#    (16자 이상)을 그대로 쓰고(재배포해도 로그인 세션 유지), 기존 값도 없을 때만 secrets.token_hex(32)로 만든다.
 #    값은 출력하지 않는다
-"$APP_DIR/.venv/bin/python" - "$UPLOAD_DIR/app.env" "$APP_DIR/.env.new" "$DB_URL" << 'PY'
+"$APP_DIR/.venv/bin/python" - "$UPLOAD_DIR/app.env" "$APP_DIR/.env.new" "$DB_URL" "$APP_DIR/.env" << 'PY'
 import os
 import re
 import secrets
@@ -98,16 +99,25 @@ import sys
 
 from dotenv import dotenv_values
 
-src, dst, db_url = sys.argv[1:4]
+src, dst, db_url, old = sys.argv[1:5]
 values = dotenv_values(src)
 key = values.get("SECRET_KEY") or ""
-regenerate = len(key) < 16
-drop = re.compile(r"^\s*(export\s+)?(DATABASE_URL" + ("|SECRET_KEY" if regenerate else "") + r")\s*=")
+replace = len(key) < 16
+new_key, how = "", "있음(16자 이상, 그대로 사용)"
+if replace:
+    prev = (dotenv_values(old).get("SECRET_KEY") or "") if os.path.isfile(old) else ""
+    if len(prev) >= 16 and re.fullmatch(r"[A-Za-z0-9._~+/=-]+", prev):
+        new_key, how = prev, "비어 있거나 16자 미만 → 서버의 기존 값 유지(로그인 세션 유지)"
+    elif len(prev) >= 16 and "'" not in prev:
+        new_key, how = f"'{prev}'", "비어 있거나 16자 미만 → 서버의 기존 값 유지(로그인 세션 유지)"
+    else:
+        new_key, how = secrets.token_hex(32), "비어 있거나 16자 미만, 서버에도 없음 → 새로 생성(secrets.token_hex(32))"
+drop = re.compile(r"^\s*(export\s+)?(DATABASE_URL" + ("|SECRET_KEY" if replace else "") + r")\s*=")
 with open(src, encoding="utf-8-sig") as f:
     lines = [line for line in f.read().splitlines() if not drop.match(line)]
 lines.append(f"DATABASE_URL={db_url}")
-if regenerate:
-    lines.append(f"SECRET_KEY={secrets.token_hex(32)}")
+if replace:
+    lines.append(f"SECRET_KEY={new_key}")
 fd = os.open(dst, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
 with os.fdopen(fd, "w", encoding="utf-8") as f:
     f.write("\n".join(lines) + "\n")
@@ -118,7 +128,7 @@ def state(name):
     return "있음" if (values.get(name) or "").strip() else "비어 있음"
 
 
-print("[provision] .env SECRET_KEY: " + ("비어 있거나 16자 미만 → 서버에서 새로 생성(secrets.token_hex(32))" if regenerate else "있음(16자 이상, 그대로 사용)"))
+print("[provision] .env SECRET_KEY: " + how)
 print(f"[provision] .env DATABASE_URL: {db_url}")
 print(f"[provision] .env LLM_API_KEY: {state('LLM_API_KEY')}" + ("" if state("LLM_API_KEY") == "있음" else " (채팅만 동작하지 않음)"))
 print(f"[provision] .env NAVER_CLIENT_ID·SECRET: {state('NAVER_CLIENT_ID')}·{state('NAVER_CLIENT_SECRET')}")

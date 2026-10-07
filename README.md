@@ -32,12 +32,13 @@ cd ai_chatbot
 git switch develop                                      # 앱 코드는 develop에 있다(main은 초기 커밋뿐)
 cp -n .env.example .env && chmod 600 .env               # .env가 없을 때만
 # .env에 채운다: LLM_API_KEY(Codyssey AI 키), NAVER_CLIENT_ID·NAVER_CLIENT_SECRET(네이버 개발자센터)
-#   SECRET_KEY는 비워 두면 서버가 secrets.token_hex(32)로 만든다. DATABASE_URL은 서버 경로로 자동 교체된다
+#   SECRET_KEY는 비워 두면 첫 배포 때 서버가 secrets.token_hex(32)로 만들고, 이후 재배포에서는 그 값을 유지한다.
+#   DATABASE_URL은 서버 경로로 자동 교체된다
 ```
 
 - 배포되는 것은 **커밋된 코드**다(`git archive`). 커밋하지 않은 변경은 서버에 가지 않는다(사전 점검이 경고한다).
 - 체크아웃을 `develop`으로 바꾸지 않을 때는 이 저장소의 `.env`에 `APP_REF=develop`(원격 브랜치를 그대로 쓰려면 `git fetch` 후 `APP_REF=origin/develop`)을 넣는다. `APP_REF`가 `main`처럼 앱 코드가 없는 커밋이면 사전 점검이 `APP_REF에 앱 코드가 없습니다. ai_chatbot은 develop 브랜치에 코드가 있습니다(APP_REF=develop)`라고 안내하고 AWS를 부르기 전에 멈춘다.
-- `LLM_API_KEY`가 비어 있어도 배포는 된다. 채팅(AI 답변)만 `502 AI_ERROR`가 난다(사전 점검이 경고). 나중에 키를 채우고 `./deploy.sh`를 다시 실행하면 `.env`만 다시 올린다.
+- `LLM_API_KEY`가 비어 있어도 배포는 된다. 채팅(AI 답변)만 `502 AI_ERROR`가 난다(사전 점검이 경고). 나중에 키를 채우고 `./deploy.sh`를 다시 실행하면 `.env`가 바뀐 것을 알아채고 소스와 `.env`를 다시 올려 설치를 다시 한다(venv·SQLite DB는 유지).
 
 **1단계 — 키 넣기**
 
@@ -174,7 +175,7 @@ Elastic IP·NAT Gateway·ELB·RDS는 만들지 않는다.
 |---|---|---|
 | 내 PC | ai_chatbot의 `.env`(`APP_ENV_FILE`) | 그 저장소의 `.gitignore`. 이 저장소에는 들어오지 않는다 |
 | 전송 | `scp <APP_ENV_FILE> ubuntu@<IP>:.b3-1-upload/app.env` | SSH(22, 내 IP/32만)로 **파일째** 보낸다. 값이 명령줄·로그·증거에 실리지 않는다. 업로드 폴더는 700 |
-| 서버 | `/home/ubuntu/ai_chatbot/.env` | `provision-app.sh`가 소유자 `ubuntu`, 권한 **600**으로 두고 업로드본은 지운다. `DATABASE_URL`은 `sqlite:////home/ubuntu/ai_chatbot/app.db`로 맞추고, `SECRET_KEY`가 비었거나 16자 미만이면 `secrets.token_hex(32)`로 새로 만든다 |
+| 서버 | `/home/ubuntu/ai_chatbot/.env` | `provision-app.sh`가 소유자 `ubuntu`, 권한 **600**으로 두고 업로드본은 지운다. `DATABASE_URL`은 `sqlite:////home/ubuntu/ai_chatbot/app.db`로 맞춘다. 올린 `.env`의 `SECRET_KEY`가 비었거나 16자 미만이면 서버의 기존 값(16자 이상)을 그대로 쓰고(재배포해도 로그인 세션 유지), 기존 값도 없을 때(첫 배포)만 `secrets.token_hex(32)`로 만든다 |
 | 넣지 않는 곳 | user-data | user-data는 인스턴스 메타데이터와 콘솔에서 보이므로 비밀값을 넣지 않는다 |
 | 기록 | 화면·`evidence/aws/03b-app.txt` | 항목별 "있음/비어 있음"과 `.env` 권한(`600 ubuntu:ubuntu`)만 남긴다. 앱 경로는 `<APP_SRC>`·`<APP_ENV_FILE>`로 가린다 |
 
@@ -241,6 +242,7 @@ ADMIN_AWS_ACCESS_KEY_ID=... ADMIN_AWS_SECRET_ACCESS_KEY=... ./iam/create-iam-use
 | `APP_REF`가 없는 브랜치·커밋 | 종료 코드 1 |
 | `APP_REF` 커밋에 `app/main.py`·`requirements.txt`가 없음(예: ai_chatbot의 `main`) | `APP_REF에 앱 코드가 없습니다. ai_chatbot은 develop 브랜치에 코드가 있습니다(APP_REF=develop)` 안내 후 종료 코드 1 |
 | `APP_ENV_FILE`(기본 `APP_SRC/.env`)이 없음 | `cp .env.example .env`와 채울 항목을 안내하고 종료 코드 1 |
+| `ssh`·`scp`가 없음 | `sudo apt-get install -y openssh-client`를 안내하고 종료 코드 1(리소스를 다 만든 뒤 앱 전송 단계에서 멈추는 일 방지) |
 | 앱 `.env`의 `LLM_API_KEY`가 비어 있음 / `APP_SRC`에 커밋하지 않은 변경 | **경고만** 하고 진행한다(채팅만 안 됨 / 커밋된 내용만 배포됨). 값은 출력하지 않고 항목별 있음·비어 있음만 알린다 |
 | 루트 계정 키 (`arn:aws:iam::<id>:root`) | 즉시 거부 — 미션 제약 "루트 금지" |
 | 리전이 서울이 아님 / 프리 티어 외 인스턴스 유형 | 거부 |
@@ -264,9 +266,11 @@ aws ec2 describe-instance-types --region ap-northeast-2 \
 
 - 각 단계는 만든 리소스 ID를 **즉시** `state/resources.env`에 적는다. 다시 실행하면 이미 끝난 단계(생성·연결·규칙 추가)는 건너뛰고 이어서 진행한다.
 - 방금 만든 VPC·서브넷·IGW·Route Table·SG는 조회될 때까지 기다린 뒤 다음 단계(연결·경로·규칙 추가)로 간다(`wait vpc-exists`, 나머지는 NotFound만 재시도하는 조회). AWS API의 최종 일관성 때문에 생성 직후 잠깐 "없음"이 나올 수 있기 때문이다.
-- 앱은 설치에 성공했을 때만 배포한 커밋 SHA를 `APP_COMMIT`으로 적는다. 다시 실행했을 때 **같은 커밋·같은 앱 `.env`(수정 시각·크기)·같은 인스턴스**면 앱 재배포를 건너뛰고 검증만 한다. 커밋이 바뀌었거나 `.env`를 고쳤으면 다시 올린다. 서버의 `provision-app.sh`는 여러 번 실행해도 안전하다(venv·`.env`·SQLite DB 유지, 소스만 교체).
-- SSH가 아직 안 되면(부팅 중) 10초 간격으로 최대 60번 다시 확인한다. user-data가 `cloud-init status: error`로 끝났으면 기다리지 않고 바로 멈추고 `/var/log/cloud-init-output.log` 확인 방법을 알려 준다.
-- 실패하면 `[ERROR] 단계 실패: <단계>. 원인을 고친 뒤 ./deploy.sh를 다시 실행하면 이어서 진행합니다. 정리는 ./cleanup.sh`가 나온다.
+- 앱은 설치에 성공했을 때만 배포한 커밋 SHA를 `APP_COMMIT`으로 적는다. 다시 실행했을 때 **같은 커밋·같은 앱 `.env`(수정 시각·크기, 심볼릭 링크면 대상 파일)·같은 인스턴스**면 앱 재배포를 건너뛰고 검증만 한다. 커밋이 바뀌었거나 `.env`를 고쳤으면 다시 올린다. 서버의 `provision-app.sh`는 여러 번 실행해도 안전하다(venv·`.env`의 `SECRET_KEY`·SQLite DB 유지, 소스만 교체).
+- **같은 커밋·같은 `.env`로 강제 재설치**하려면 `touch <APP_ENV_FILE>`(기본 `../../../ai_chatbot/.env`) 후 `./deploy.sh`를 실행한다. 수정 시각이 바뀌어 소스와 `.env`를 다시 올리고 설치를 다시 한다.
+- SSH가 아직 안 되면(부팅 중) 10초 간격으로 최대 60번 다시 확인한다. 연결 시간 초과가 6번 연속이면 SG 22번의 SSH 허용 IP가 지금 내 IP와 같은지 확인하라고 경고한다(계속 기다린다). 서버의 호스트 키가 `state/known_hosts`와 다르면 기다리지 않고 멈추고 `ssh-keygen -f state/known_hosts -R <IP>` 방법을 알려 준다.
+- user-data가 `cloud-init status: error`로 끝났으면 기다리지 않고 바로 멈춘다. **user-data는 첫 부팅에 한 번만 돌기 때문에 `./deploy.sh`만 다시 실행해서는 풀리지 않는다**(인스턴스는 켜진 채 과금). 안내대로 `/var/log/cloud-init-output.log`를 본 뒤, 일시 오류(apt 미러 등)면 `ssh -i state/b3-1-key.pem ubuntu@<IP> 'sudo bash /var/lib/cloud/instance/user-data.txt'`로 user-data를 다시 돌리고 `./deploy.sh`, 아니면 `./cleanup.sh` → `./deploy.sh`로 새로 만든다.
+- 그 밖의 실패는 `[ERROR] 단계 실패: <단계>. 원인을 고친 뒤 ./deploy.sh를 다시 실행하면 이어서 진행합니다. 정리는 ./cleanup.sh`가 나온다.
 - `cleanup.sh`는 상태 파일 값과 `Project=b3-1` 태그 조회 결과를 **합쳐** 지운다. 상태 파일을 잃어버려도 정리된다. 한 단계가 실패해도 경고만 남기고 다음 단계로 간다. 남은 리소스가 있으면 목록을 보여 주고 종료 코드 1로 끝난다(여러 번 실행해도 안전).
 
 ### 증거 파일 (AWS 실행 시 자동 생성)
@@ -296,7 +300,7 @@ aws ec2 describe-instance-types --region ap-northeast-2 \
 $ docker exec b3-1-rehearsal curl -s -i http://localhost/health
 HTTP/1.1 200 OK
 Server: nginx/1.24.0 (Ubuntu)
-Date: Wed, 07 Oct 2026 16:42:01 GMT
+Date: Wed, 07 Oct 2026 17:40:13 GMT
 Content-Type: application/json
 Content-Length: 15
 Connection: keep-alive
@@ -309,8 +313,8 @@ Connection: keep-alive
 
 $ docker exec b3-1-rehearsal ss -ltnp
 State  Recv-Q Send-Q Local Address:Port Peer Address:PortProcess
-LISTEN 0      511          0.0.0.0:80        0.0.0.0:*    users:(("nginx",pid=2894,fd=5))
 LISTEN 0      2048       127.0.0.1:8000      0.0.0.0:*
+LISTEN 0      511          0.0.0.0:80        0.0.0.0:*    users:(("nginx",pid=2894,fd=5))
 LISTEN 0      511             [::]:80           [::]:*    users:(("nginx",pid=2894,fd=6))
 [PASS] uvicorn은 127.0.0.1:8000에만 리슨
 [PASS] 8000을 모든 인터페이스(0.0.0.0:8000)에 열지 않음
@@ -325,13 +329,16 @@ LISTEN 0      511             [::]:80           [::]:*    users:(("nginx",pid=28
 [PASS] 로그인 POST /api/auth/login — 기대: 200 / 실제: 200
 [PASS] 질문 POST /api/chat — LLM_API_KEY 비움 → AI_ERROR — 기대: 502 / 실제: 502
 ...
-[PASS] 서버가 만든 SECRET_KEY 길이(secrets.token_hex(32), 값은 표시 안 함) — 기대: 64 / 실제: 64
+[PASS] 재설치 뒤 SECRET_KEY가 바뀌지 않음(값 대신 해시 앞 12자를 비교, 값은 표시 안 함) — 기대: 같음 / 실제: 같음
+[PASS] 재설치 전에 받은 로그인 쿠키로 GET / (세션 유지 → 채팅 화면) — 기대: 200 / 실제: 200
 [PASS] 재설치 후 같은 계정 로그인(SQLite 데이터 유지) — 기대: 200 / 실제: 200
+...
+[PASS] 서버가 새로 만든 SECRET_KEY 길이(secrets.token_hex(32), 값은 표시 안 함) — 기대: 64 / 실제: 64
 
-리허설 결과: 전체 통과 — Nginx 경유 /health 200 {"status":"ok"}, / 303 → -L 200(로그인 화면), /signup 200, 가입·로그인 동작, uvicorn 127.0.0.1:8000만 리슨
+리허설 결과: 전체 통과 — Nginx 경유 /health 200 {"status":"ok"}, / 303 → -L 200(로그인 화면), /signup 200, 가입·로그인 동작, uvicorn 127.0.0.1:8000만 리슨, 재설치 시 SECRET_KEY·세션·데이터 유지
 ```
 
-리허설에는 앱 설치 전 Nginx만 떠 있을 때 `/health`가 `502`인 것(`[PASS] 앱 설치 전 Nginx 경유 /health … 502`)과, 같은 `provision-app.sh`를 두 번 실행해도(두 번째는 `SECRET_KEY`를 비워 서버가 생성) 데이터가 유지되는 것도 들어 있다. 판정 줄은 모두 30개이고 FAIL은 없다.
+리허설에는 앱 설치 전 Nginx만 떠 있을 때 `/health`가 `502`인 것(`[PASS] 앱 설치 전 Nginx 경유 /health … 502`)도 들어 있다. 같은 `provision-app.sh`를 다시 실행하면(올린 `.env`의 `SECRET_KEY`는 비움) 서버의 기존 키를 유지해 이전 로그인 쿠키가 그대로 통하고 데이터도 남는다. 서버 `.env`가 없는 새 서버를 가정하면 서버가 키를 새로 만들고, 이때는 이전 쿠키가 무효(303)가 된다. 판정 줄은 모두 35개이고 FAIL은 없다.
 LLM·네이버 API 실제 호출은 리허설 대상이 아니다(가짜 `.env`라 키가 없다). 실제 키로의 채팅과 LLM API 도달성은 AWS 실행 때 확인한다.
 
 트러블슈팅 재현(포트를 열지 않은 상태 → 가설 검증 → 조치)은 [docs/troubleshooting.md](docs/troubleshooting.md)에 있다.
@@ -339,7 +346,7 @@ LLM·네이버 API 실제 호출은 리허설 대상이 아니다(가짜 `.env`�
 ## 테스트
 
 ```bash
-bash tests/run.sh      # 실제 출력 마지막 줄: PASS 74 / FAIL 0 (bash 5.2, bash 4.3 컨테이너 모두)
+bash tests/run.sh      # 실제 출력 마지막 줄: PASS 83 / FAIL 0 (bash 5.2, bash 4.3 컨테이너 모두)
 ```
 
 `PATH` 맨 앞에 가짜 `aws`·`curl`·`ssh`·`scp`([`tests/fake-bin/`](tests/fake-bin))를 넣고 스크립트를 실제로 실행한다. 가짜 명령은 호출을 한 줄씩 기록하고 정해진 ID·응답을 돌려준다. 가짜 `scp`는 인자만 기록하고 파일 내용은 남기지 않는다. 실제 AWS·네트워크는 부르지 않는다.
@@ -354,7 +361,7 @@ bash tests/run.sh      # 실제 출력 마지막 줄: PASS 74 / FAIL 0 (bash 5.2
 | verify (5) | `/health` 200 + JSON·SSH 점검 기록, 503이면 실패, 상태 없으면 안내, SSH 불가면 실패 |
 | cleanup (15) | `MY_IP=/32`에서도 deploy→verify→cleanup 끝까지 진행, 역순 삭제, RT 연결 해제·IGW 분리, 태그 탐색(상태 파일 없음), 인스턴스별 종료·대기, EIP·EBS 해제, 잔여 리소스 보고, 실패해도 계속, DependencyViolation 재시도·재시도 상한, NotFound는 이미 없음, 일반 오류는 재시도 안 함, 두 번 실행, IP 감지 불필요, 키페어·pem·known_hosts 삭제 |
 | aws CLI·IAM (10) | 아키텍처별 설치 URL, `./.tools` 설치, 정책 최소권한·Deny, **스크립트의 모든 ec2 호출이 정책에 있는지**, IAM 도우미(`.env` 작성·재사용·콘솔·루트 거부) |
-| 앱 배포 (16) | **AWS 호출 전 중단**: `APP_SRC`가 git 저장소가 아님·없음, `APP_ENV_FILE` 없음, `APP_REF` 없음, `APP_REF`에 앱 코드 없음(develop 안내) / 경고만: `LLM_API_KEY` 비움, 커밋 안 한 변경 / 기본 경로 `../../../ai_chatbot`·상대 경로 / **`.env`를 파일 경로로 scp하고 비밀 표식이 호출 기록·증거·화면·상태에 없음**, 소스 묶음에 `.env` 없음 / 서버 준비 → 업로드 → 설치 → 검증 순서 / 커밋 SHA 기록, 같은 커밋 재배포 생략, 커밋·`.env`가 바뀌면 재배포 / SSH 대기, user-data 오류면 즉시 중단 / 설치 실패 후 재실행 / **SG 80·22만(8000 없음)**, uvicorn `127.0.0.1` 바인딩 / `provision-app.sh` 정적 검사 / verify: `/health`는 `{"status":"ok"}`만 PASS(`OK`는 FAIL), `/` 303·`-L` 200·`ai-chatbot` 서비스, LLM API `000`은 WARN(종료 코드 0) |
+| 앱 배포 (25) | **AWS 호출 전 중단**: `APP_SRC`가 git 저장소가 아님·없음, `APP_ENV_FILE` 없음, `APP_REF` 없음, `APP_REF`에 앱 코드 없음(develop 안내) / 경고만: `LLM_API_KEY` 비움, 커밋 안 한 변경 / 기본 경로 `../../../ai_chatbot`·상대 경로 / **`.env`를 파일 경로로 scp하고 비밀 표식이 호출 기록·증거·화면·상태에 없음**, 소스 묶음에 `.env` 없음 / 서버 준비 → 업로드 → 설치 → 검증 순서 / 커밋 SHA 기록, 같은 커밋 재배포 생략, 커밋·`.env`가 바뀌면 재배포 / SSH 대기, user-data 오류면 즉시 중단 / 설치 실패 후 재실행 / **SG 80·22만(8000 없음)**, uvicorn `127.0.0.1` 바인딩 / `provision-app.sh` 정적 검사 / verify: `/health`는 `{"status":"ok"}`만 PASS(`OK`는 FAIL), `/` 303·`-L` 200·`ai-chatbot` 서비스, LLM API `000`은 WARN(종료 코드 0) / **리뷰 후속(9)**: user-data 실패 시 수동 재실행·정리 후 재배포 안내(“다시 실행하면 이어서” 아님), 심볼릭 링크 `.env` 대상이 바뀌면 재배포, `touch`로 강제 재설치, 서버의 기존 `SECRET_KEY` 유지·없을 때만 생성(`.env` 보정 코드를 직접 실행), `ssh`·`scp` 없으면 AWS 호출 전 중단, 준비 확인 1은 대기·예상 밖 코드는 오류, 호스트 키 변경 즉시 중단(`ssh-keygen -R` 안내), 시간 초과 6회 연속 경고, 증거 마스킹이 줄 단위로 바로 출력 |
 
 정적 검사:
 
@@ -432,7 +439,7 @@ python3 -m json.tool iam/least-privilege-policy.json > /dev/null                
 │   ├── stack.sh                      리허설 공용 (앱 git archive, 리허설 전용 가짜 .env)
 │   └── repro-port-blocked.sh         트러블슈팅 재현
 ├── tests/
-│   ├── run.sh                        테스트 러너 (74개)
+│   ├── run.sh                        테스트 러너 (83개)
 │   └── fake-bin/{aws,curl,ssh,scp}   가짜 명령
 ├── docs/
 │   ├── architecture.png  make_architecture.py

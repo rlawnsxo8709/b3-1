@@ -152,6 +152,13 @@ mask_ip() { printf '%s.*.*' "${1%.*.*}"; }
 # 확장 정규식(ERE)에서 글자 그대로 맞도록 특수문자를 이스케이프한다(s 명령 구분자로 쓰는 / | 포함)
 sed_escape() { printf '%s' "$1" | sed 's#[][\.*^$|+?(){}/]#\\&#g'; }
 
+# 오래 걸리는 명령(앱 설치 등)의 출력이 끝날 때까지 쌓이지 않고 줄마다 화면에 보이도록 sed를 줄 단위로 돌린다
+# (GNU sed -u. 지원하지 않는 sed면 그대로 쓴다)
+SED_LINEBUF=()
+if sed -u -e '' < /dev/null > /dev/null 2>&1; then
+  SED_LINEBUF=(-u)
+fi
+
 # 공개 저장소에 올릴 증거에서 계정 ID와 개인 IP를 가리고, 절대 경로를 프로젝트 기준 경로로 바꾼다.
 # 앱 체크아웃(APP_SRC)과 앱 .env(APP_ENV_FILE)의 개인 경로는 <APP_SRC>·<APP_ENV_FILE>로 바꾼다.
 # 계정 ID·IP는 숫자 경계를 지켜 다른 값(예: 11.2.3.45)의 일부를 깨뜨리지 않고,
@@ -173,7 +180,7 @@ mask_stream() {
   if [ -n "$ip" ]; then
     args+=(-e ":ip" -e "s/(^|[^0-9.])$(sed_escape "$ip")([^0-9]|\$)/\1$(mask_ip "$ip")\2/" -e "t ip")
   fi
-  sed "${args[@]}"
+  sed ${SED_LINEBUF[@]+"${SED_LINEBUF[@]}"} "${args[@]}"
 }
 
 mask_text() { printf '%s\n' "$*" | mask_stream; }
@@ -304,6 +311,10 @@ check_app_source() {
   local top secret="" llm="" naver_id="" naver_secret=""
   resolve_app_source
   command -v git > /dev/null 2>&1 || die "git이 필요합니다. 배포할 앱 소스를 git archive로 묶습니다. 예: sudo apt-get install -y git"
+  # 리소스를 다 만든 뒤 앱 전송 단계에서야 없다는 것을 알면 서버만 켜 둔 채 멈추므로 미리 확인한다
+  if ! command -v ssh > /dev/null 2>&1 || ! command -v scp > /dev/null 2>&1; then
+    die "ssh·scp가 필요합니다. 앱 소스와 앱 .env를 SSH(22)로 서버에 보냅니다. 예: sudo apt-get install -y openssh-client"
+  fi
   if [ ! -d "$APP_SRC" ]; then
     die "배포할 앱 폴더가 없습니다(APP_SRC=$APP_SRC). ai_chatbot을 clone한 경로를 .env의 APP_SRC에 넣으세요. 비워 두면 이 프로젝트 기준 ../../../ai_chatbot 을 씁니다."
   fi
@@ -330,16 +341,20 @@ check_app_source() {
   env_file_get "$APP_ENV_FILE" NAVER_CLIENT_ID naver_id
   env_file_get "$APP_ENV_FILE" NAVER_CLIENT_SECRET naver_secret
   log "배포할 앱: APP_REF=$APP_REF → 커밋 ${APP_COMMIT_SHA:0:12} ($(git -C "$APP_SRC" log -1 --format=%s "$APP_COMMIT_SHA" 2> /dev/null | cut -c1-60))"
-  log "앱 .env 항목(값은 표시하지 않음): SECRET_KEY $([ "${#secret}" -ge 16 ] && echo 있음 || echo '비어 있음·16자 미만 → 서버에서 생성') / LLM_API_KEY $([ -n "$llm" ] && echo 있음 || echo 비어 있음) / NAVER 키 $([ -n "$naver_id" ] && [ -n "$naver_secret" ] && echo 있음 || echo 비어 있음)"
+  log "앱 .env 항목(값은 표시하지 않음): SECRET_KEY $([ "${#secret}" -ge 16 ] && echo 있음 || echo '비어 있음·16자 미만 → 서버의 기존 값 유지, 없으면 생성') / LLM_API_KEY $([ -n "$llm" ] && echo 있음 || echo 비어 있음) / NAVER 키 $([ -n "$naver_id" ] && [ -n "$naver_secret" ] && echo 있음 || echo 비어 있음)"
   if [ -z "$llm" ]; then
-    warn "앱 .env의 LLM_API_KEY가 비어 있습니다. 배포는 진행하지만 채팅(AI 답변)만 동작하지 않습니다(502 AI_ERROR). 키를 채운 뒤 ./deploy.sh를 다시 실행하면 .env만 다시 올립니다."
+    warn "앱 .env의 LLM_API_KEY가 비어 있습니다. 배포는 진행하지만 채팅(AI 답변)만 동작하지 않습니다(502 AI_ERROR). 키를 채운 뒤 ./deploy.sh를 다시 실행하면 .env가 바뀐 것을 알아채고 소스와 .env를 다시 올려 설치를 다시 합니다(venv·DB는 유지)."
   fi
   secret="" llm="" naver_id="" naver_secret=""
 }
 
-# 앱 .env가 바뀌었는지 알기 위한 표식(수정 시각:크기). 내용에서 만들지 않으므로 비밀값과 무관하다
+# 앱 .env가 바뀌었는지 알기 위한 표식(수정 시각:크기). 내용에서 만들지 않으므로 비밀값과 무관하다.
+# 심볼릭 링크면 링크가 가리키는 파일을 본다(-L). GNU stat, 안 되면 BSD stat, 그것도 안 되면
+# 매번 다른 값을 돌려 "모르면 다시 올린다"
 app_env_stamp() {
-  stat -c '%Y:%s' "$APP_ENV_FILE" 2> /dev/null || echo unknown
+  stat -L -c '%Y:%s' "$APP_ENV_FILE" 2> /dev/null ||
+    stat -L -f '%m:%z' "$APP_ENV_FILE" 2> /dev/null ||
+    echo "unknown-$(date +%s)"
 }
 
 # ------------------------------------------------------------------ SSH

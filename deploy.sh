@@ -26,6 +26,9 @@ USERDATA_MARKER="/var/lib/b3-1/user-data.done"
 # 서버 준비 확인: 0 = user-data 완료, 3 = cloud-init 오류, 그 밖 = 아직 진행 중(ssh 자체가 안 되면 255)
 READY_CMD="test -f $USERDATA_MARKER && exit 0; if cloud-init status 2>/dev/null | grep -q '^status: error'; then exit 3; fi; exit 1"
 CURRENT_STEP="시작"
+# 실패했을 때 보여 줄 다음 행동. 단계가 다시 실행해도 소용없는 실패(예: user-data 실패)면 그 단계가 바꾼다
+RESUME_HINT="원인을 고친 뒤 ./deploy.sh를 다시 실행하면 이어서 진행합니다. 정리는 ./cleanup.sh"
+SSH_TIMEOUT_WARN=6 # 연결 시간 초과가 이만큼 연속되면 SG 22번 허용 IP를 의심하라고 알린다
 VPC_ID="" SUBNET_ID="" IGW_ID="" RT_ID="" SG_ID="" KEY_NAME="" AMI_ID="" INSTANCE_ID="" PUBLIC_IP=""
 
 usage() {
@@ -52,7 +55,7 @@ on_error() {
     return 0
   fi
   printf '[ERROR] 실패한 명령(종료 코드 %s): %s\n' "$rc" "${cmd:0:300}" >&2
-  die "단계 실패: ${CURRENT_STEP}. 원인을 고친 뒤 ./deploy.sh를 다시 실행하면 이어서 진행합니다. 정리는 ./cleanup.sh"
+  die "단계 실패: ${CURRENT_STEP}. ${RESUME_HINT}"
 }
 
 # AWS가 돌려준 값이 기대한 ID 형식인지 확인한다(빈 값·None으로 다음 단계가 엉뚱하게 진행되는 것 방지)
@@ -351,27 +354,55 @@ step_evidence() {
 }
 
 # SSH가 열리고 user-data(Nginx 프록시·python3-venv 설치)가 끝날 때까지 기다린다.
-# ssh 종료 코드 255 = 아직 접속 불가(부팅 중), 1 = user-data 진행 중, 3 = cloud-init 오류(기다려도 소용없어 바로 멈춘다)
+# ssh 종료 코드: 0 = 준비 완료, 1 = user-data 진행 중(기다림), 255 = 아직 접속 불가(부팅 중, 기다림),
+# 3 = cloud-init 오류. user-data는 첫 부팅에 한 번만 돌므로 기다리거나 ./deploy.sh를 다시 실행해도 소용없어 바로 멈춘다.
+# 호스트 키가 known_hosts와 다르면 재시도해도 같으므로 바로 멈춘다. 그 밖의 코드도 진행 중으로 보지 않고 멈춘다
 wait_for_server() {
-  local i rc out
+  local i rc out first timeouts=0 warned=0 ssh_cmd="ssh -i state/$KEY_NAME.pem ubuntu@$PUBLIC_IP"
   log "SSH 접속과 첫 부팅 설치(user-data) 완료를 기다립니다(${SSH_SLEEP}초 간격, 최대 ${SSH_TRIES}번). 보통 2~4분 걸립니다."
   for ((i = 1; i <= SSH_TRIES; i++)); do
     rc=0
     # shellcheck disable=SC2029 # READY_CMD는 이 스크립트의 고정 문자열이라 여기서 펼쳐 보내는 것이 맞다
     out="$(ssh "${SSH_OPTS[@]}" "ubuntu@$PUBLIC_IP" "$READY_CMD" 2>&1)" || rc=$?
+    first="${out%%$'\n'*}"
     case "$rc" in
       0)
         log "서버 준비 완료: SSH 접속 성공, user-data 완료 표식 확인 (${i}번째 확인)"
         evidence_note "$APP_EVIDENCE" "# 서버 준비 확인: SSH 접속 성공, $USERDATA_MARKER 있음 (${i}번째 확인)"
         return 0
         ;;
+      1)
+        timeouts=0
+        log "user-data 진행 중 ${i}/${SSH_TRIES} (Nginx·python3-venv 설치)"
+        ;;
       3)
-        printf '[ERROR] 첫 부팅 설치(user-data)가 실패했습니다(cloud-init status: error). 원인 확인: ssh -i state/%s.pem ubuntu@%s "sudo tail -50 /var/log/cloud-init-output.log"\n' \
-          "$KEY_NAME" "$PUBLIC_IP" >&2
+        printf '[ERROR] 첫 부팅 설치(user-data)가 실패했습니다(cloud-init status: error). 원인 확인: %s "sudo tail -50 /var/log/cloud-init-output.log"\n' \
+          "$ssh_cmd" >&2
+        RESUME_HINT="user-data는 첫 부팅에 한 번만 실행되므로 ./deploy.sh만 다시 실행하면 같은 곳에서 멈춥니다(인스턴스는 켜진 채 과금). 일시 오류(apt 미러 등)였다면 $ssh_cmd 'sudo bash /var/lib/cloud/instance/user-data.txt'로 user-data를 다시 실행한 뒤 ./deploy.sh, 아니면 ./cleanup.sh → ./deploy.sh로 새로 만드세요."
         return 1
         ;;
-      255) log "SSH 대기 중 ${i}/${SSH_TRIES}${out:+ — ${out%%$'\n'*}}" ;;
-      *) log "user-data 진행 중 ${i}/${SSH_TRIES} (Nginx·python3-venv 설치)" ;;
+      255)
+        if [[ "$out" == *"Host key verification failed"* || "$out" == *"IDENTIFICATION HAS CHANGED"* ]]; then
+          printf '[ERROR] 서버(%s)의 호스트 키가 state/known_hosts에 기록된 것과 다릅니다. 같은 퍼블릭 IP를 다른 인스턴스가 받은 경우가 대부분이지만, 중간자 공격일 수도 있으니 확인 없이 넘기지 마세요.\n' \
+            "$PUBLIC_IP" >&2
+          RESUME_HINT="이 인스턴스가 맞다면 ssh-keygen -f state/known_hosts -R $PUBLIC_IP 로 이전 기록을 지운 뒤 ./deploy.sh를 다시 실행하면 이어서 진행합니다. 정리는 ./cleanup.sh"
+          return 1
+        fi
+        if [[ "$out" == *"timed out"* ]]; then
+          timeouts=$((timeouts + 1))
+        else
+          timeouts=0
+        fi
+        log "SSH 대기 중 ${i}/${SSH_TRIES}${first:+ — $first}"
+        if [ "$timeouts" -ge "$SSH_TIMEOUT_WARN" ] && [ "$warned" = 0 ]; then
+          warn "SSH 연결이 ${SSH_TIMEOUT_WARN}번 연속 시간 초과입니다. 부팅 중이면 곧 열리지만, 보통은 SG 22번의 SSH 허용 IP($(state_get SSH_CIDR))가 지금 내 공인 IP(curl -4 https://checkip.amazonaws.com)와 달라 막힌 경우입니다. 다르면 docs/troubleshooting.md의 'SSH 허용 IP 갱신'을 따르세요(계속 기다립니다)."
+          warned=1
+        fi
+        ;;
+      *)
+        printf '[ERROR] 서버 준비 확인 명령이 예상하지 못한 종료 코드(%s)로 끝났습니다: %s\n' "$rc" "${first:-출력 없음}" >&2
+        return 1
+        ;;
     esac
     sleep "$SSH_SLEEP"
   done

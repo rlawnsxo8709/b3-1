@@ -4,12 +4,12 @@
 # 실제 ai_chatbot/.env는 쓰지 않는다. 가짜 .env는 SECRET_KEY만 만들고 LLM_API_KEY·NAVER 키는 비운다(채팅은 502가 정상).
 # 컨테이너 포트 80 → 호스트 127.0.0.1:18080 (호스트 curl = '외부에서 접속'에 해당). 앱 포트 8000은 게시하지 않는다.
 # 앱: APP_SRC=../../../ai_chatbot, APP_REF=HEAD → 커밋 40540c8a3a49c4901f2367668fec8dc087f11ff7 (Update README.md)
-# 실행 시각: 2026-10-08 01:41:29 +0900 / 호스트: Linux aarch64 / Docker 29.1.3
+# 실행 시각: 2026-10-08 02:39:41 +0900 / 호스트: Linux aarch64 / Docker 29.1.3
 
 ## 1. 컨테이너 기동과 user-data 실행 (EC2 첫 부팅에 해당)
 
 $ docker run -d --name b3-1-rehearsal -p 127.0.0.1:18080:80 ubuntu:24.04 sleep infinity
-792c0bf088d4da07505bbebcf9d4b89987ab0f5e2559e7a6dbe4ab9ebb07a9ff
+ac5727a33ab027bc244fc303fb1e8305730207323a18d70a79be665edfa113fd
 
 $ docker cp server/user-data.sh b3-1-rehearsal:/tmp/user-data.sh
 
@@ -26,22 +26,22 @@ Get:1 http://ports.ubuntu.com/ubuntu-ports noble InRelease [256 kB]
 Get:2 http://ports.ubuntu.com/ubuntu-ports noble-updates InRelease [126 kB]
 Get:3 http://ports.ubuntu.com/ubuntu-ports noble-backports InRelease [126 kB]
 Get:4 http://ports.ubuntu.com/ubuntu-ports noble-security InRelease [126 kB]
-Get:5 http://ports.ubuntu.com/ubuntu-ports noble/restricted arm64 Packages [113 kB]
-Get:6 http://ports.ubuntu.com/ubuntu-ports noble/universe arm64 Packages [19.0 MB]
-Get:7 http://ports.ubuntu.com/ubuntu-ports noble/multiverse arm64 Packages [274 kB]
+Get:5 http://ports.ubuntu.com/ubuntu-ports noble/universe arm64 Packages [19.0 MB]
+Get:6 http://ports.ubuntu.com/ubuntu-ports noble/multiverse arm64 Packages [274 kB]
+Get:7 http://ports.ubuntu.com/ubuntu-ports noble/restricted arm64 Packages [113 kB]
 Get:8 http://ports.ubuntu.com/ubuntu-ports noble/main arm64 Packages [1776 kB]
-Get:9 http://ports.ubuntu.com/ubuntu-ports noble-updates/universe arm64 Packages [2211 kB]
+Get:9 http://ports.ubuntu.com/ubuntu-ports noble-updates/main arm64 Packages [1761 kB]
 Get:10 http://ports.ubuntu.com/ubuntu-ports noble-updates/multiverse arm64 Packages [96.8 kB]
 Get:11 http://ports.ubuntu.com/ubuntu-ports noble-updates/restricted arm64 Packages [3132 kB]
-Get:12 http://ports.ubuntu.com/ubuntu-ports noble-updates/main arm64 Packages [1761 kB]
-Get:13 http://ports.ubuntu.com/ubuntu-ports noble-backports/universe arm64 Packages [36.3 kB]
+Get:12 http://ports.ubuntu.com/ubuntu-ports noble-updates/universe arm64 Packages [2211 kB]
+Get:13 http://ports.ubuntu.com/ubuntu-ports noble-backports/main arm64 Packages [49.0 kB]
 Get:14 http://ports.ubuntu.com/ubuntu-ports noble-backports/multiverse arm64 Packages [671 B]
-Get:15 http://ports.ubuntu.com/ubuntu-ports noble-backports/main arm64 Packages [49.0 kB]
-Get:16 http://ports.ubuntu.com/ubuntu-ports noble-security/universe arm64 Packages [1634 kB]
+Get:15 http://ports.ubuntu.com/ubuntu-ports noble-backports/universe arm64 Packages [36.3 kB]
+Get:16 http://ports.ubuntu.com/ubuntu-ports noble-security/multiverse arm64 Packages [91.7 kB]
 Get:17 http://ports.ubuntu.com/ubuntu-ports noble-security/restricted arm64 Packages [2886 kB]
-Get:18 http://ports.ubuntu.com/ubuntu-ports noble-security/multiverse arm64 Packages [91.7 kB]
-Get:19 http://ports.ubuntu.com/ubuntu-ports noble-security/main arm64 Packages [1393 kB]
-Fetched 35.1 MB in 9s (4070 kB/s)
+Get:18 http://ports.ubuntu.com/ubuntu-ports noble-security/main arm64 Packages [1393 kB]
+Get:19 http://ports.ubuntu.com/ubuntu-ports noble-security/universe arm64 Packages [1634 kB]
+Fetched 35.1 MB in 9s (4052 kB/s)
 Reading package lists...
 + break
 + apt-get -o DPkg::Lock::Timeout=300 install -y nginx curl python3-venv
@@ -129,7 +129,7 @@ Get:48 http://ports.ubuntu.com/ubuntu-ports noble-updates/universe arm64 python3
 Get:49 http://ports.ubuntu.com/ubuntu-ports noble-updates/universe arm64 python3.12-venv arm64 3.12.3-1ubuntu0.17 [5684 B]
 Get:50 http://ports.ubuntu.com/ubuntu-ports noble-updates/universe arm64 python3-venv arm64 3.12.3-0ubuntu2.1 [1032 B]
 debconf: delaying package configuration, since apt-utils is not installed
-Fetched 17.0 MB in 7s (2283 kB/s)
+Fetched 17.0 MB in 7s (2404 kB/s)
 (Reading database ... (Reading database ... 5%(Reading database ... 10%(Reading database ... 15%(Reading database ... 20%(Reading database ... 25%(Reading database ... 30%(Reading database ... 35%(Reading database ... 40%(Reading database ... 45%(Reading database ... 50%(Reading database ... 55%(Reading database ... 60%(Reading database ... 65%(Reading database ... 70%(Reading database ... 75%(Reading database ... 80%(Reading database ... 85%(Reading database ... 90%(Reading database ... 95%(Reading database ... 100%(Reading database ... 4376 files and directories currently installed.)
 Preparing to unpack .../libssl3t64_3.0.13-0ubuntu3.16_arm64.deb ...
 Unpacking libssl3t64:arm64 (3.0.13-0ubuntu3.16) over (3.0.13-0ubuntu3.12) ...
@@ -310,8 +310,8 @@ Setting up libsasl2-modules-db:arm64 (2.1.28+dfsg1-5ubuntu3.1) ...
 Setting up tzdata (2026c-0ubuntu0.24.04.1) ...
 
 Current default time zone: 'Etc/UTC'
-Local time is now:      Wed Oct  7 16:41:48 UTC 2026.
-Universal Time is now:  Wed Oct  7 16:41:48 UTC 2026.
+Local time is now:      Wed Oct  7 17:40:00 UTC 2026.
+Universal Time is now:  Wed Oct  7 17:40:00 UTC 2026.
 Run 'dpkg-reconfigure tzdata' if you wish to change it.
 
 Setting up libcap2-bin (1:2.66-5ubuntu2.4) ...
@@ -368,7 +368,7 @@ nginx: configuration file /etc/nginx/nginx.conf test is successful
 + date '+%Y-%m-%d %H:%M:%S %Z'
 
 $ docker exec b3-1-rehearsal cat /var/lib/b3-1/user-data.done
-2026-10-07 16:41:50 UTC
+2026-10-07 17:40:02 UTC
 [PASS] user-data 완료 표식(/var/lib/b3-1/user-data.done)
 
 $ docker exec b3-1-rehearsal curl -s -o /dev/null -w %{http_code} http://localhost/health
@@ -377,7 +377,7 @@ $ docker exec b3-1-rehearsal curl -s -o /dev/null -w %{http_code} http://localho
 
 ## 2. 앱 소스와 리허설 전용 가짜 .env 전송 (EC2에서는 deploy.sh가 SSH로 scp)
 
-$ git -C ../../../ai_chatbot archive --format=tar.gz 40540c8a3a49c4901f2367668fec8dc087f11ff7 > state/.rehearsal.Sy3tNt/app.tar.gz
+$ git -C ../../../ai_chatbot archive --format=tar.gz 40540c8a3a49c4901f2367668fec8dc087f11ff7 > state/.rehearsal.jJ8hll/app.tar.gz
 # 압축 파일: 112개 항목, 2370718 bytes
 [PASS] 압축 파일에 추적하지 않는 .env가 없음(git archive) — 기대: 0 / 실제: 0
 # 가짜 .env 항목(값은 표시하지 않음): SECRET_KEY DATABASE_URL NAVER_CLIENT_ID NAVER_CLIENT_SECRET NAVER_TIMEOUT_SECONDS LLM_API_KEY LLM_BASE_URL LLM_MODEL LLM_TIMEOUT_SECONDS 
@@ -385,11 +385,11 @@ $ git -C ../../../ai_chatbot archive --format=tar.gz 40540c8a3a49c4901f2367668fe
 
 $ docker exec b3-1-rehearsal install -d -m 700 -o ubuntu -g ubuntu /home/ubuntu/.b3-1-upload
 
-$ docker cp state/.rehearsal.Sy3tNt/app.tar.gz b3-1-rehearsal:/home/ubuntu/.b3-1-upload/app.tar.gz
+$ docker cp state/.rehearsal.jJ8hll/app.tar.gz b3-1-rehearsal:/home/ubuntu/.b3-1-upload/app.tar.gz
 
 $ docker cp server/provision-app.sh b3-1-rehearsal:/home/ubuntu/.b3-1-upload/provision-app.sh
 
-$ docker cp state/.rehearsal.Sy3tNt/app.env b3-1-rehearsal:/home/ubuntu/.b3-1-upload/app.env
+$ docker cp state/.rehearsal.jJ8hll/app.env b3-1-rehearsal:/home/ubuntu/.b3-1-upload/app.env
 
 ## 3. 앱 설치 — deploy.sh가 SSH로 실행하는 것과 같은 server/provision-app.sh
 
@@ -403,12 +403,12 @@ $ docker exec b3-1-rehearsal bash /home/ubuntu/.b3-1-upload/provision-app.sh /ho
 [provision] .env LLM_API_KEY: 비어 있음 (채팅만 동작하지 않음)
 [provision] .env NAVER_CLIENT_ID·SECRET: 비어 있음·비어 있음
 [provision] .env 권한: 600 ubuntu:ubuntu
-[provision] systemd 없음(로컬 리허설): 같은 명령을 백그라운드로 실행 — PID 2976, 로그 /var/log/ai-chatbot.log
+[provision] systemd 없음(로컬 리허설): 같은 명령을 백그라운드로 실행 — PID 2978, 로그 /var/log/ai-chatbot.log
 [provision] 로컬 /health 응답: {"status":"ok"} (2번째 확인)
 [provision] 리슨 소켓(:80, :8000):
 State  Recv-Q Send-Q Local Address:Port Peer Address:PortProcess
-LISTEN 0      511          0.0.0.0:80        0.0.0.0:*          
 LISTEN 0      2048       127.0.0.1:8000      0.0.0.0:*          
+LISTEN 0      511          0.0.0.0:80        0.0.0.0:*          
 LISTEN 0      511             [::]:80           [::]:*          
 [provision] Nginx 경유: GET /health → 200, GET / → 303 (비로그인 303 → /login), GET -L / → 200
 [provision] 완료: 커밋 40540c8a3a49c4901f2367668fec8dc087f11ff7, 서비스 ai-chatbot (uvicorn 127.0.0.1:8000, Nginx :80 → 프록시)
@@ -418,7 +418,7 @@ LISTEN 0      511             [::]:80           [::]:*
 $ docker exec b3-1-rehearsal curl -s -i http://localhost/health
 HTTP/1.1 200 OK
 Server: nginx/1.24.0 (Ubuntu)
-Date: Wed, 07 Oct 2026 16:42:01 GMT
+Date: Wed, 07 Oct 2026 17:40:13 GMT
 Content-Type: application/json
 Content-Length: 15
 Connection: keep-alive
@@ -444,8 +444,8 @@ $ docker exec b3-1-rehearsal curl -s -o /dev/null -w %{http_code} http://localho
 
 $ docker exec b3-1-rehearsal ss -ltnp
 State  Recv-Q Send-Q Local Address:Port Peer Address:PortProcess                         
-LISTEN 0      511          0.0.0.0:80        0.0.0.0:*    users:(("nginx",pid=2894,fd=5))
 LISTEN 0      2048       127.0.0.1:8000      0.0.0.0:*                                   
+LISTEN 0      511          0.0.0.0:80        0.0.0.0:*    users:(("nginx",pid=2894,fd=5))
 LISTEN 0      511             [::]:80           [::]:*    users:(("nginx",pid=2894,fd=6))
 [PASS] uvicorn은 127.0.0.1:8000에만 리슨
 [PASS] 8000을 모든 인터페이스(0.0.0.0:8000)에 열지 않음
@@ -468,7 +468,7 @@ ls: cannot access '/home/ubuntu/.b3-1-upload': No such file or directory
 $ curl -sS -i http://127.0.0.1:18080/health
 HTTP/1.1 200 OK
 Server: nginx/1.24.0 (Ubuntu)
-Date: Wed, 07 Oct 2026 16:42:01 GMT
+Date: Wed, 07 Oct 2026 17:40:13 GMT
 Content-Type: application/json
 Content-Length: 15
 Connection: keep-alive
@@ -500,20 +500,20 @@ $ curl -s -o /dev/null -w %{http_code} http://127.0.0.1:18080/signup
 $ curl -s -w  %{http_code} -H Content-Type: application/json -d {"email":"rehearsal@example.com","password":"rehearsal-pass-2026"} http://127.0.0.1:18080/api/auth/signup
 {"id":1,"email":"rehearsal@example.com"} 201
 
-$ curl -s -w  %{http_code} -c state/.rehearsal.Sy3tNt/cookies.txt -H Content-Type: application/json -d {"email":"rehearsal@example.com","password":"rehearsal-pass-2026"} http://127.0.0.1:18080/api/auth/login
+$ curl -s -w  %{http_code} -c state/.rehearsal.jJ8hll/cookies.txt -H Content-Type: application/json -d {"email":"rehearsal@example.com","password":"rehearsal-pass-2026"} http://127.0.0.1:18080/api/auth/login
 {"id":1,"email":"rehearsal@example.com"} 200
 
-$ curl -s -o /dev/null -w %{http_code} -b state/.rehearsal.Sy3tNt/cookies.txt http://127.0.0.1:18080/
+$ curl -s -o /dev/null -w %{http_code} -b state/.rehearsal.jJ8hll/cookies.txt http://127.0.0.1:18080/
 200
 
-$ curl -s -w  %{http_code} -b state/.rehearsal.Sy3tNt/cookies.txt -H Content-Type: application/json -d {"mode":"free","message":"리허설 질문입니다"} http://127.0.0.1:18080/api/chat
+$ curl -s -w  %{http_code} -b state/.rehearsal.jJ8hll/cookies.txt -H Content-Type: application/json -d {"mode":"free","message":"리허설 질문입니다"} http://127.0.0.1:18080/api/chat
 {"error":"AI_ERROR","message":"AI 응답을 받지 못했습니다. 잠시 후 다시 시도해 주세요."} 502
 
-$ curl -s -w  %{http_code} -b state/.rehearsal.Sy3tNt/cookies.txt http://127.0.0.1:18080/api/me/chats?limit=5
-[{"id":1,"mode":"free","question":"리허설 질문입니다","answer":null,"status":"error","created_at":"2026-10-07T16:42:02"}] 200
+$ curl -s -w  %{http_code} -b state/.rehearsal.jJ8hll/cookies.txt http://127.0.0.1:18080/api/me/chats?limit=5
+[{"id":1,"mode":"free","question":"리허설 질문입니다","answer":null,"status":"error","created_at":"2026-10-07T17:40:14"}] 200
 
 $ docker exec b3-1-rehearsal ls -l /home/ubuntu/ai_chatbot/app.db
--rw-r--r-- 1 ubuntu ubuntu 24576 Oct  7 16:42 /home/ubuntu/ai_chatbot/app.db
+-rw-r--r-- 1 ubuntu ubuntu 24576 Oct  7 17:40 /home/ubuntu/ai_chatbot/app.db
 [PASS] 회원가입 POST /api/auth/signup — 기대: 201 / 실제: 201
 [PASS] 로그인 POST /api/auth/login — 기대: 200 / 실제: 200
 [PASS] 로그인 후 GET / (채팅 화면) — 기대: 200 / 실제: 200
@@ -523,34 +523,34 @@ $ docker exec b3-1-rehearsal ls -l /home/ubuntu/ai_chatbot/app.db
 [PASS] 실패한 질문도 기록됨(status error)
 [PASS] SQLite 파일이 DATABASE_URL 위치에 생성됨
 
-## 7. 재실행 안전성 — 같은 provision-app.sh를 한 번 더(이번 가짜 .env는 SECRET_KEY를 비워 서버가 만들게 한다)
+## 7. 재실행 안전성 — 같은 provision-app.sh를 한 번 더(이번 가짜 .env는 SECRET_KEY를 비운다 → 서버의 기존 값을 유지해야 한다)
 # 가짜 .env SECRET_KEY 길이: 0 (비움)
 
 $ docker exec b3-1-rehearsal install -d -m 700 -o ubuntu -g ubuntu /home/ubuntu/.b3-1-upload
 
-$ docker cp state/.rehearsal.Sy3tNt/app.tar.gz b3-1-rehearsal:/home/ubuntu/.b3-1-upload/app.tar.gz
+$ docker cp state/.rehearsal.jJ8hll/app.tar.gz b3-1-rehearsal:/home/ubuntu/.b3-1-upload/app.tar.gz
 
 $ docker cp server/provision-app.sh b3-1-rehearsal:/home/ubuntu/.b3-1-upload/provision-app.sh
 
-$ docker cp state/.rehearsal.Sy3tNt/app.env b3-1-rehearsal:/home/ubuntu/.b3-1-upload/app.env
+$ docker cp state/.rehearsal.jJ8hll/app.env b3-1-rehearsal:/home/ubuntu/.b3-1-upload/app.env
 
 $ docker exec b3-1-rehearsal bash /home/ubuntu/.b3-1-upload/provision-app.sh /home/ubuntu/.b3-1-upload 40540c8a3a49c4901f2367668fec8dc087f11ff7
 [provision] 배포 커밋: 40540c8a3a49c4901f2367668fec8dc087f11ff7
 [provision] 소스 배치: /home/ubuntu/ai_chatbot (97개 파일)
 [provision] venv 재사용: /home/ubuntu/ai_chatbot/.venv (Python 3.12.3)
 [provision] 의존성 설치 완료: fastapi==0.142.2 pydantic-settings==2.15.0 SQLAlchemy==2.0.54 uvicorn==0.54.0
-[provision] .env SECRET_KEY: 비어 있거나 16자 미만 → 서버에서 새로 생성(secrets.token_hex(32))
+[provision] .env SECRET_KEY: 비어 있거나 16자 미만 → 서버의 기존 값 유지(로그인 세션 유지)
 [provision] .env DATABASE_URL: sqlite:////home/ubuntu/ai_chatbot/app.db
 [provision] .env LLM_API_KEY: 비어 있음 (채팅만 동작하지 않음)
 [provision] .env NAVER_CLIENT_ID·SECRET: 비어 있음·비어 있음
 [provision] .env 권한: 600 ubuntu:ubuntu
-[provision] 이전 uvicorn 종료(PID 2976)
-[provision] systemd 없음(로컬 리허설): 같은 명령을 백그라운드로 실행 — PID 3172, 로그 /var/log/ai-chatbot.log
+[provision] 이전 uvicorn 종료(PID 2978)
+[provision] systemd 없음(로컬 리허설): 같은 명령을 백그라운드로 실행 — PID 3182, 로그 /var/log/ai-chatbot.log
 [provision] 로컬 /health 응답: {"status":"ok"} (2번째 확인)
 [provision] 리슨 소켓(:80, :8000):
 State  Recv-Q Send-Q Local Address:Port Peer Address:PortProcess
-LISTEN 0      511          0.0.0.0:80        0.0.0.0:*          
 LISTEN 0      2048       127.0.0.1:8000      0.0.0.0:*          
+LISTEN 0      511          0.0.0.0:80        0.0.0.0:*          
 LISTEN 0      511             [::]:80           [::]:*          
 [provision] Nginx 경유: GET /health → 200, GET / → 303 (비로그인 303 → /login), GET -L / → 200
 [provision] 완료: 커밋 40540c8a3a49c4901f2367668fec8dc087f11ff7, 서비스 ai-chatbot (uvicorn 127.0.0.1:8000, Nginx :80 → 프록시)
@@ -561,13 +561,60 @@ $ docker exec b3-1-rehearsal bash -c sed -n 's/^SECRET_KEY=//p' /home/ubuntu/ai_
 $ curl -s -o /dev/null -w %{http_code} http://127.0.0.1:18080/health
 200
 
+$ curl -s -o /dev/null -w %{http_code} -b state/.rehearsal.jJ8hll/cookies.txt http://127.0.0.1:18080/
+200
+
 $ curl -s -o /dev/null -w %{http_code} -H Content-Type: application/json -d {"email":"rehearsal@example.com","password":"rehearsal-pass-2026"} http://127.0.0.1:18080/api/auth/login
 200
-[PASS] 서버가 만든 SECRET_KEY 길이(secrets.token_hex(32), 값은 표시 안 함) — 기대: 64 / 실제: 64
+[PASS] 재설치 뒤 서버 SECRET_KEY 길이(값은 표시 안 함) — 기대: 64 / 실제: 64
+[PASS] 재설치 뒤 SECRET_KEY가 바뀌지 않음(값 대신 해시 앞 12자를 비교, 값은 표시 안 함) — 기대: 같음 / 실제: 같음
 [PASS] 재설치 후 호스트 GET /health — 기대: 200 / 실제: 200
+[PASS] 재설치 전에 받은 로그인 쿠키로 GET / (세션 유지 → 채팅 화면) — 기대: 200 / 실제: 200
 [PASS] 재설치 후 같은 계정 로그인(SQLite 데이터 유지) — 기대: 200 / 실제: 200
 
-## 8. 적용된 Nginx 사이트 설정과 서비스 파일
+## 8. 새 서버 첫 배포 가정 — 서버 .env를 지우고 SECRET_KEY를 비운 .env로 설치 → 서버가 새로 만든다
+
+$ docker exec b3-1-rehearsal rm -f /home/ubuntu/ai_chatbot/.env
+
+$ docker exec b3-1-rehearsal install -d -m 700 -o ubuntu -g ubuntu /home/ubuntu/.b3-1-upload
+
+$ docker cp state/.rehearsal.jJ8hll/app.tar.gz b3-1-rehearsal:/home/ubuntu/.b3-1-upload/app.tar.gz
+
+$ docker cp server/provision-app.sh b3-1-rehearsal:/home/ubuntu/.b3-1-upload/provision-app.sh
+
+$ docker cp state/.rehearsal.jJ8hll/app.env b3-1-rehearsal:/home/ubuntu/.b3-1-upload/app.env
+
+$ docker exec b3-1-rehearsal bash /home/ubuntu/.b3-1-upload/provision-app.sh /home/ubuntu/.b3-1-upload 40540c8a3a49c4901f2367668fec8dc087f11ff7
+[provision] 배포 커밋: 40540c8a3a49c4901f2367668fec8dc087f11ff7
+[provision] 소스 배치: /home/ubuntu/ai_chatbot (96개 파일)
+[provision] venv 재사용: /home/ubuntu/ai_chatbot/.venv (Python 3.12.3)
+[provision] 의존성 설치 완료: fastapi==0.142.2 pydantic-settings==2.15.0 SQLAlchemy==2.0.54 uvicorn==0.54.0
+[provision] .env SECRET_KEY: 비어 있거나 16자 미만, 서버에도 없음 → 새로 생성(secrets.token_hex(32))
+[provision] .env DATABASE_URL: sqlite:////home/ubuntu/ai_chatbot/app.db
+[provision] .env LLM_API_KEY: 비어 있음 (채팅만 동작하지 않음)
+[provision] .env NAVER_CLIENT_ID·SECRET: 비어 있음·비어 있음
+[provision] .env 권한: 600 ubuntu:ubuntu
+[provision] 이전 uvicorn 종료(PID 3182)
+[provision] systemd 없음(로컬 리허설): 같은 명령을 백그라운드로 실행 — PID 3340, 로그 /var/log/ai-chatbot.log
+[provision] 로컬 /health 응답: {"status":"ok"} (2번째 확인)
+[provision] 리슨 소켓(:80, :8000):
+State  Recv-Q Send-Q Local Address:Port Peer Address:PortProcess
+LISTEN 0      2048       127.0.0.1:8000      0.0.0.0:*          
+LISTEN 0      511          0.0.0.0:80        0.0.0.0:*          
+LISTEN 0      511             [::]:80           [::]:*          
+[provision] Nginx 경유: GET /health → 200, GET / → 303 (비로그인 303 → /login), GET -L / → 200
+[provision] 완료: 커밋 40540c8a3a49c4901f2367668fec8dc087f11ff7, 서비스 ai-chatbot (uvicorn 127.0.0.1:8000, Nginx :80 → 프록시)
+
+$ docker exec b3-1-rehearsal bash -c sed -n 's/^SECRET_KEY=//p' /home/ubuntu/ai_chatbot/.env | tr -d '\n' | wc -c
+64
+
+$ curl -s -o /dev/null -w %{http_code} -b state/.rehearsal.jJ8hll/cookies.txt http://127.0.0.1:18080/
+303
+[PASS] 서버가 새로 만든 SECRET_KEY 길이(secrets.token_hex(32), 값은 표시 안 함) — 기대: 64 / 실제: 64
+[PASS] 새로 만든 SECRET_KEY는 이전 값과 다름(해시 앞 12자 비교) — 기대: 다름 / 실제: 다름
+[PASS] 키가 바뀌면 이전 로그인 쿠키는 무효(→ /login 303) — 기대: 303 / 실제: 303
+
+## 9. 적용된 Nginx 사이트 설정과 서비스 파일
 
 $ docker exec b3-1-rehearsal bash -c nginx -T 2>/dev/null | awk '/# configuration file \/etc\/nginx\/sites-enabled\/default/{f=1} /# configuration file/{if($0 !~ /sites-enabled\/default/) f=0} f'
 # configuration file /etc/nginx/sites-enabled/default:
@@ -611,5 +658,5 @@ RestartSec=3
 [Install]
 WantedBy=multi-user.target
 
-리허설 결과: 전체 통과 — Nginx 경유 /health 200 {"status":"ok"}, / 303 → -L 200(로그인 화면), /signup 200, 가입·로그인 동작, uvicorn 127.0.0.1:8000만 리슨
+리허설 결과: 전체 통과 — Nginx 경유 /health 200 {"status":"ok"}, / 303 → -L 200(로그인 화면), /signup 200, 가입·로그인 동작, uvicorn 127.0.0.1:8000만 리슨, 재설치 시 SECRET_KEY·세션·데이터 유지
 # 컨테이너 b3-1-rehearsal 와 가짜 .env는 종료 시 자동 삭제된다 (trap)

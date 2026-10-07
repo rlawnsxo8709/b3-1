@@ -1,10 +1,44 @@
 #!/usr/bin/env bash
-# 테스트용 가짜 ssh — 원격 명령 문자열을 "$FAKE_LOG"에 남기고
-# systemctl is-active / curl localhost / curl https://example.com 결과를 차례로 흉내 낸다.
-#   FAKE_SSH_FAIL=1  접속 실패(exit 255)
-printf 'ssh %s\n' "$*" >> "${FAKE_LOG:-/dev/null}"
+# 테스트용 가짜 ssh — 원격 명령 문자열을 "$FAKE_LOG"에 남기고 원격 명령의 종류에 따라 정해진 결과를 흉내 낸다.
+#   준비 확인(…user-data.done…)        FAKE_SSH_NOT_READY=N   처음 N번은 접속 실패(exit 255)
+#                                       FAKE_USERDATA_ERROR=1  cloud-init이 오류로 끝남(exit 3)
+#   앱 설치(…provision-app.sh…)        FAKE_PROVISION_RC=코드  설치 스크립트의 종료 코드(기본 0)
+#   verify 점검(…systemctl is-active nginx…)  key=value 줄을 돌려준다
+#                                       FAKE_APP_STATE=상태    ai-chatbot 서비스 상태(기본 active)
+#                                       FAKE_LLM_CODE=코드     LLM API 도달성 HTTP 코드(기본 401, 000=도달 불가)
+#   그 밖의 원격 명령(업로드 폴더 준비 등)은 출력 없이 성공
+#   FAKE_SSH_FAIL=1  모든 접속이 실패(exit 255)
+set -u
+log="${FAKE_LOG:-/dev/null}"
+printf 'ssh %s\n' "$*" >> "$log"
 if [ "${FAKE_SSH_FAIL:-0}" = 1 ]; then
   echo "ssh: connect to host 203.0.113.10 port 22: Connection timed out" >&2
   exit 255
 fi
-printf 'active\n200\n200\n'
+
+cmd="${!#}"
+case "$cmd" in
+  *user-data.done*)
+    # 이번 호출까지 포함한 준비 확인 횟수
+    n="$(grep -c 'user-data.done' "$log" 2> /dev/null || echo 0)"
+    if [ "$n" -le "${FAKE_SSH_NOT_READY:-0}" ]; then
+      echo "ssh: connect to host 203.0.113.10 port 22: Connection refused" >&2
+      exit 255
+    fi
+    if [ "${FAKE_USERDATA_ERROR:-0}" = 1 ]; then
+      echo "status: error" >&2
+      exit 3
+    fi
+    exit 0
+    ;;
+  *provision-app.sh*)
+    printf '%s\n' '[provision] 배포 커밋: (fake)' '[provision] 로컬 /health 응답: {"status":"ok"}'
+    exit "${FAKE_PROVISION_RC:-0}"
+    ;;
+  *"systemctl is-active nginx"*)
+    printf '%s\n' "nginx=active" "app=${FAKE_APP_STATE:-active}" "local_root=303" "local_root_follow=200" \
+      'local_health={"status":"ok"} 200' "outbound=200" "llm=${FAKE_LLM_CODE:-401}"
+    ;;
+  *) : ;;
+esac
+exit 0

@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
 # 테스트용 가짜 curl — 네트워크에 나가지 않는다. 모든 호출을 "$FAKE_LOG"에 남긴다.
+# ai_chatbot이 Nginx 뒤에서 응답하는 모양을 흉내 낸다.
 #   checkip.amazonaws.com  → "${FAKE_IP:-198.51.100.7}"
-#   http://<IP>/health     → 코드 "${FAKE_HEALTH_CODE:-200}", 본문 "OK"
-#   http://<IP>/           → 코드 200, 짧은 HTML
+#   http://<IP>/health     → 코드 "${FAKE_HEALTH_CODE:-200}", 본문 "${FAKE_HEALTH_BODY:-{"status":"ok"}}"
+#   http://<IP>/           → 비로그인이라 303 + Location: /login. -L이면 따라가서 200(로그인 화면)
+#   http://<IP>/login, /signup → 200
 #   https://awscli.amazonaws.com/*  → "$FAKE_AWSCLI_ZIP" 파일을 -o 위치로 복사(없으면 exit 22)
-# -o FILE(본문 저장), -w FORMAT(%{http_code} 치환), -i(응답 헤더 포함), -f(4xx·5xx면 exit 22)를 흉내 낸다.
+# -o FILE(본문 저장), -w FORMAT(%{http_code}·%{url_effective} 치환), -i(응답 헤더 포함), -L(리다이렉트 따라감),
+# -f(4xx·5xx면 exit 22)를 흉내 낸다.
 set -u
 printf 'curl %s\n' "$*" >> "${FAKE_LOG:-/dev/null}"
 
@@ -12,6 +15,7 @@ out=""
 fmt=""
 include=0
 failflag=0
+follow=0
 url=""
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -19,16 +23,20 @@ while [ $# -gt 0 ]; do
     -w | --write-out) fmt="$2"; shift 2; continue ;;
     -m | --max-time | --connect-timeout | --retry) shift 2; continue ;;
     -i | --include) include=1 ;;
+    -L | --location) follow=1 ;;
     --*) ;;
     -*)
       [[ "$1" == *f* ]] && failflag=1
       [[ "$1" == *i* ]] && include=1
+      [[ "$1" == *L* ]] && follow=1
       ;;
     *) url="$1" ;;
   esac
   shift
 done
 
+effective="$url"
+location=""
 case "$url" in
   *checkip*)
     printf '%s\n' "${FAKE_IP:-198.51.100.7}"
@@ -44,13 +52,26 @@ case "$url" in
     ;;
   http://*/health)
     code="${FAKE_HEALTH_CODE:-200}"
-    if [ "$code" = 200 ]; then body=$'OK\n'; else body=$'Service Unavailable\n'; fi
-    ctype="text/plain"
+    ok_body='{"status":"ok"}'
+    if [ "$code" = 200 ]; then body="${FAKE_HEALTH_BODY:-$ok_body}"; else body=$'<html><title>502 Bad Gateway</title></html>\n'; fi
+    ctype="application/json"
+    ;;
+  http://*/login | http://*/signup)
+    code=200
+    body=$'<!doctype html><title>로그인 · PULSE</title>\n'
+    ctype="text/html; charset=utf-8"
     ;;
   http://*)
-    code=200
-    body=$'<!doctype html><title>Hello Cloud</title><h1>Hello Cloud — Codyssey B3-1</h1>\n'
-    ctype="text/html"
+    if [ "$follow" = 1 ]; then
+      code=200
+      body=$'<!doctype html><title>로그인 · PULSE</title>\n'
+      effective="${url%/}/login"
+    else
+      code=303
+      body=""
+      location="/login"
+    fi
+    ctype="text/html; charset=utf-8"
     ;;
   *)
     echo "curl: (6) Could not resolve host (fake)" >&2
@@ -60,7 +81,11 @@ esac
 
 response="$body"
 if [ "$include" = 1 ]; then
-  response="$(printf 'HTTP/1.1 %s FAKE\r\nServer: nginx (fake)\r\nContent-Type: %s\r\n\r\n' "$code" "$ctype")"$'\n'"$body"
+  headers="HTTP/1.1 $code FAKE"$'\r\n'"Server: nginx (fake)"$'\r\n'"Content-Type: $ctype"
+  if [ -n "$location" ]; then
+    headers+=$'\r\n'"location: $location"
+  fi
+  response="$headers"$'\r\n\r\n'"$body"
 fi
 if [ -n "$out" ]; then
   [ "$out" = /dev/null ] || printf '%s' "$response" > "$out"
@@ -69,7 +94,9 @@ else
 fi
 if [ -n "$fmt" ]; then
   pat='%{http_code}'
-  printf '%b' "${fmt//"$pat"/$code}"
+  pat2='%{url_effective}'
+  fmt="${fmt//"$pat"/$code}"
+  printf '%b' "${fmt//"$pat2"/$effective}"
 fi
 if [ "$failflag" = 1 ] && [ "$code" -ge 400 ]; then
   exit 22

@@ -4,7 +4,7 @@
 #   2) 앱 소스(로컬 ai_chatbot의 git archive) + 리허설 전용 가짜 .env를 docker cp(= deploy.sh의 scp)
 #   3) server/provision-app.sh를 "그대로" 실행(systemd가 없으므로 uvicorn을 백그라운드로)
 #   4) 컨테이너 안(= EC2 안의 curl localhost)과 호스트(= 외부 접속)에서 /health·/·/signup, 가입·로그인·채팅 확인
-#   5) 같은 provision-app.sh를 한 번 더 실행해 재실행 안전성 확인
+#   5) 같은 provision-app.sh를 다시 실행해 재실행 안전성(SECRET_KEY·세션·데이터 유지)과 새 서버의 키 생성 확인
 # AWS가 아니다. VPC·보안 그룹·IAM·SSH·systemd는 검증하지 않으며 결과는 evidence/local/rehearsal.txt에 남는다.
 # 실제 ai_chatbot/.env는 읽지 않는다(가짜 .env는 SECRET_KEY만 만들고 LLM·NAVER 키는 비운다).
 #   APP_SRC=<ai_chatbot 경로> APP_REF=<브랜치> bash local/rehearsal.sh   # 기본: ../../../ai_chatbot, HEAD
@@ -170,26 +170,44 @@ check_has "실패한 질문도 기록됨(status error)" '"status":"error"' "$his
 check_has "SQLite 파일이 DATABASE_URL 위치에 생성됨" "/home/ubuntu/ai_chatbot/app.db" "$dbfile"
 
 note ""
-note "## 7. 재실행 안전성 — 같은 provision-app.sh를 한 번 더(이번 가짜 .env는 SECRET_KEY를 비워 서버가 만들게 한다)"
+note "## 7. 재실행 안전성 — 같은 provision-app.sh를 한 번 더(이번 가짜 .env는 SECRET_KEY를 비운다 → 서버의 기존 값을 유지해야 한다)"
+KEYHASH_CMD="sed -n 's/^SECRET_KEY=//p' /home/ubuntu/ai_chatbot/.env | sha256sum | cut -c1-12"
+key_before="$(docker exec "$NAME" bash -c "$KEYHASH_CMD")" || key_before=""
 stack_fake_env "$TMP" empty
 note "# 가짜 .env SECRET_KEY 길이: $(sed -n 's/^SECRET_KEY=//p' "$TMP/app.env" | tr -d '\n' | wc -c) (비움)"
 upload
 run docker exec "$NAME" bash "$STACK_UPLOAD/provision-app.sh" "$STACK_UPLOAD" "$STACK_COMMIT"
+key_after="$(docker exec "$NAME" bash -c "$KEYHASH_CMD")" || key_after=""
 keylen="$(run docker exec "$NAME" bash -c "sed -n 's/^SECRET_KEY=//p' /home/ubuntu/ai_chatbot/.env | tr -d '\n' | wc -c")" || true
 again_health="$(run curl -s -o /dev/null -w '%{http_code}' "$BASE/health")" || true
+same_session="$(run curl -s -o /dev/null -w '%{http_code}' -b "$JAR" "$BASE/")" || true
 relogin="$(run curl -s -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -d "$ACCOUNT" "$BASE/api/auth/login")" || true
-check "서버가 만든 SECRET_KEY 길이(secrets.token_hex(32), 값은 표시 안 함)" "64" "$(code "$keylen")"
+check "재설치 뒤 서버 SECRET_KEY 길이(값은 표시 안 함)" "64" "$(code "$keylen")"
+check "재설치 뒤 SECRET_KEY가 바뀌지 않음(값 대신 해시 앞 12자를 비교, 값은 표시 안 함)" "같음" "$([ -n "$key_before" ] && [ "$key_before" = "$key_after" ] && echo 같음 || echo 다름)"
 check "재설치 후 호스트 GET /health" "200" "$(code "$again_health")"
+check "재설치 전에 받은 로그인 쿠키로 GET / (세션 유지 → 채팅 화면)" "200" "$(code "$same_session")"
 check "재설치 후 같은 계정 로그인(SQLite 데이터 유지)" "200" "$(code "$relogin")"
 
 note ""
-note "## 8. 적용된 Nginx 사이트 설정과 서비스 파일"
+note "## 8. 새 서버 첫 배포 가정 — 서버 .env를 지우고 SECRET_KEY를 비운 .env로 설치 → 서버가 새로 만든다"
+run docker exec "$NAME" rm -f /home/ubuntu/ai_chatbot/.env
+upload
+run docker exec "$NAME" bash "$STACK_UPLOAD/provision-app.sh" "$STACK_UPLOAD" "$STACK_COMMIT"
+key_new="$(docker exec "$NAME" bash -c "$KEYHASH_CMD")" || key_new=""
+newlen="$(run docker exec "$NAME" bash -c "sed -n 's/^SECRET_KEY=//p' /home/ubuntu/ai_chatbot/.env | tr -d '\n' | wc -c")" || true
+old_cookie="$(run curl -s -o /dev/null -w '%{http_code}' -b "$JAR" "$BASE/")" || true
+check "서버가 새로 만든 SECRET_KEY 길이(secrets.token_hex(32), 값은 표시 안 함)" "64" "$(code "$newlen")"
+check "새로 만든 SECRET_KEY는 이전 값과 다름(해시 앞 12자 비교)" "다름" "$([ -n "$key_new" ] && [ "$key_new" != "$key_after" ] && echo 다름 || echo 같음)"
+check "키가 바뀌면 이전 로그인 쿠키는 무효(→ /login 303)" "303" "$(code "$old_cookie")"
+
+note ""
+note "## 9. 적용된 Nginx 사이트 설정과 서비스 파일"
 run docker exec "$NAME" bash -c "nginx -T 2>/dev/null | awk '/# configuration file \/etc\/nginx\/sites-enabled\/default/{f=1} /# configuration file/{if(\$0 !~ /sites-enabled\/default/) f=0} f'"
 run docker exec "$NAME" cat /etc/systemd/system/ai-chatbot.service
 
 note ""
 if [ "$FAILED" -eq 0 ]; then
-  note "리허설 결과: 전체 통과 — Nginx 경유 /health 200 {\"status\":\"ok\"}, / 303 → -L 200(로그인 화면), /signup 200, 가입·로그인 동작, uvicorn 127.0.0.1:8000만 리슨"
+  note "리허설 결과: 전체 통과 — Nginx 경유 /health 200 {\"status\":\"ok\"}, / 303 → -L 200(로그인 화면), /signup 200, 가입·로그인 동작, uvicorn 127.0.0.1:8000만 리슨, 재설치 시 SECRET_KEY·세션·데이터 유지"
 else
   note "리허설 결과: 실패 항목 있음 — 위 [FAIL] 줄을 확인"
 fi

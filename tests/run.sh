@@ -931,6 +931,7 @@ path_without() {
   local dir="$SANDBOX-bin" d f name skip=" $* " files
   mkdir -p "$dir"
   local IFS=:
+  # shellcheck disable=SC2031 # 이 셸의 현재 PATH를 읽는다(다른 테스트가 하위 셸에서 바꾼 PATH와 무관)
   for d in "$SANDBOX/tests/fake-bin" $PATH; do
     [ -d "$d" ] || continue
     files=()

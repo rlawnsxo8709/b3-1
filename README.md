@@ -86,9 +86,9 @@ IAM 사용자가 아직 없다면 → [IAM 사용자 만들기](#iam-사용자-�
 | 선택한 방식 | **(B) `GET http://<퍼블릭IP>/health` 호출 → HTTP 200 + 고정 응답 `{"status":"ok"}`** |
 | 고른 이유 | 응답 코드와 본문이 고정이라 스크립트(`verify.sh`)가 PASS/FAIL을 기계적으로 판정하고 증거를 남길 수 있다. 이 응답은 Nginx가 아니라 **앱(FastAPI)이** 돌려주므로, 200 + JSON이면 "Nginx → 앱"까지 살아 있다는 뜻이다. 같은 주소를 브라우저로 열면 로그인 화면이 나오므로 방식 A도 함께 확인된다 |
 | 구성한 것 | ① Nginx `location / { proxy_pass http://127.0.0.1:8000; }` (`server/user-data.sh:44`) ② 앱 `GET /health` → `{"status":"ok"}` (ai_chatbot `app/main.py`) ③ SG 인바운드 80 ← 0.0.0.0/0 ④ 서브넷 퍼블릭 IP 자동 할당 ⑤ 라우트 0.0.0.0/0 → IGW |
-| 접속 정보 (URL) | ⏳ AWS 실행 후 기입 — `http://<퍼블릭IP>/health` |
-| 퍼블릭 IP | ⏳ AWS 실행 후 기입 |
-| 검증 결과 | ⏳ AWS 실행 후 기입 — `evidence/aws/04-verify.txt`의 결과 표 |
+| 접속 정보 (URL) | `http://43.201.112.45/health` (앱 화면: `http://43.201.112.45/`) |
+| 퍼블릭 IP | `43.201.112.45` — 자동 할당 퍼블릭 IP(Elastic IP 아님). 인스턴스를 중지·시작하면 바뀐다 |
+| 검증 결과 | 2026-10-09 직접 확인: `/health` → `200` `{"status":"ok"}`, `/` → `303`, `-L /` → `200`, `:8000` 외부 접속 불가(SG에 없음). 서버 안: `nginx`·`ai-chatbot` `active`, `localhost` `303`/`-L` `200`/`/health` `200`, `https://example.com` `200`. `evidence/aws/`는 배포한 PC에만 있고 이 저장소에는 아직 없다 |
 | 스크린샷 | ⏳ AWS 실행 후 추가 — `docs/screenshots/health.png` |
 
 **`/`가 200이 아니라 303인 이유** — 앱은 로그인하지 않은 사용자가 `/`(채팅 화면)에 오면 `/login`으로 **303 리다이렉트**한다(ai_chatbot `app/routers/pages.py`). 앱 코드는 고치지 않았다. 그래서 검증은 원래 응답을 그대로 기록하고 둘로 나눠 본다.
@@ -216,6 +216,16 @@ ADMIN_AWS_ACCESS_KEY_ID=... ADMIN_AWS_SECRET_ACCESS_KEY=... ./iam/create-iam-use
 `b3-1-operator` 생성(있으면 재사용) → 정책 생성(있으면 재사용)·연결 → 액세스 키 발급 → `.env` 작성까지 한다. 기존 `.env`는 `.env.bak`으로 백업한다.
 `--console`을 주면 무작위 초기 비밀번호를 한 번만 보여 주고, 첫 로그인 때 변경을 강제한다. 루트 키로 실행하면 거부한다.
 
+**콘솔 비밀번호만 따로 만들기 — `aws login`(브라우저 로그인)으로 실습 사용자를 쓸 때**
+
+```bash
+./iam/set-console-password.sh --profile my-admin       # 비밀번호가 이미 있으면 --reset 으로 재설정
+aws login --profile b3-1 --region ap-northeast-2       # 브라우저에서 계정 ID·b3-1-operator·초기 비밀번호로 로그인
+```
+
+이미 있는 사용자에게 `IAMUserChangePassword`·`SignInLocalDevelopmentAccess`(aws login용 Sign-in OAuth2 권한)를 연결하고, 무작위 초기 비밀번호(첫 로그인 때 변경 강제)를 한 번만 보여 준다. 액세스 키·`.env`는 건드리지 않는다.
+macOS 기본 bash 3.2에서도 돈다. 루트 자격 증명은 거부하고, 관리자 IAM 사용자가 아직 없을 때만 `--allow-root`로 한 번 허용한다.
+
 ---
 
 ## 스크립트 사용법
@@ -228,6 +238,7 @@ ADMIN_AWS_ACCESS_KEY_ID=... ADMIN_AWS_SECRET_ACCESS_KEY=... ./iam/create-iam-use
 | `./verify.sh --wait` | `/health`가 200이 될 때까지 기다린 뒤 검증 (`deploy.sh`가 부른다) |
 | `./cleanup.sh` | 역순 삭제 → 태그로 잔여 조회 → 0건이면 상태 파일을 `state/resources.cleaned-<시각>.env`로 보관 |
 | `./iam/create-iam-user.sh` | (선택) 실습용 IAM 사용자와 `.env` 만들기 |
+| `./iam/set-console-password.sh` | (선택) 실습 사용자의 콘솔·`aws login` 비밀번호 만들기(`--reset` 재설정) |
 
 `.env` 선택 항목: `MY_IP`(비우면 자동 감지), `INSTANCE_TYPE`(`t3.micro`/`t2.micro`), `AZ`(기본 `ap-northeast-2a`), `PROJECT`(태그·이름 접두사, 기본 `b3-1`), `AWS_SESSION_TOKEN`(임시 키일 때),
 `APP_SRC`(ai_chatbot git 체크아웃, 비우면 이 폴더 기준 `../../../ai_chatbot`, 상대 경로는 이 폴더 기준), `APP_ENV_FILE`(서버로 보낼 앱 `.env`, 기본 `APP_SRC/.env`), `APP_REF`(배포할 브랜치·커밋, 기본 `HEAD`. 앱 코드는 `develop`에 있다).
@@ -383,27 +394,27 @@ python3 -m json.tool iam/least-privilege-policy.json > /dev/null                
 | 요구 | 상태 | 근거 |
 |---|---|---|
 | 아키텍처 다이어그램 `docs/architecture.png` | ✅ | [docs/architecture.png](docs/architecture.png) (Nginx :80 → 앱 127.0.0.1:8000 → SQLite, 아웃바운드 LLM·네이버 API) |
-| 외부 접속 증빙: 방식(B)과 접속 정보를 README에 기재 + 스크린샷 | ✅ 방식 기재 / ⏳ IP·스크린샷 | [외부 접속 검증](#외부-접속-검증--방식-b-선택) |
-| 트러블슈팅 보고서 `docs/troubleshooting.md` (증상→가설→검증→조치→결과→재발방지) | ✅ 로컬 리허설 사례 1건 / ⏳ AWS 사례 기입란 | [docs/troubleshooting.md](docs/troubleshooting.md) |
+| 외부 접속 증빙: 방식(B)과 접속 정보를 README에 기재 + 스크린샷 | ✅ 방식·IP 기재 / ⏳ 스크린샷 | [외부 접속 검증](#외부-접속-검증--방식-b-선택) |
+| 트러블슈팅 보고서 `docs/troubleshooting.md` (증상→가설→검증→조치→결과→재발방지) | ✅ 로컬 리허설 사례 1건 + AWS 사례 1건(SSH 키 분실·IP 변경) | [docs/troubleshooting.md](docs/troubleshooting.md) |
 | 리소스 정리 체크리스트 `docs/cleanup-checklist.md` (+ Billing 스크린샷 선택) | ✅ 작성 / ⏳ 체크·스크린샷 | [docs/cleanup-checklist.md](docs/cleanup-checklist.md) |
 
 **기능 요구 사항**
 
 | 요구 | 상태 | 근거 |
 |---|---|---|
-| VPC 1개 | ✅ / ⏳ | `deploy.sh` `step_vpc`, 테스트 `test_deploy_happy_path…` |
-| Public Subnet 1개 | ✅ / ⏳ | `step_subnet` (`--map-public-ip-on-launch`) |
-| IGW를 VPC에 연결 | ✅ / ⏳ | `step_igw` (`attach-internet-gateway`) |
-| Route Table에 `0.0.0.0/0 → IGW` | ✅ / ⏳ | `step_route`, 테스트가 `--destination-cidr-block 0.0.0.0/0 --gateway-id igw-…` 확인 |
-| 인스턴스 아웃바운드(`curl https://example.com`) | ✅ / ⏳ | `verify.sh`가 SSH로 확인 → `04-verify.txt`. 첫 부팅의 apt·pip 설치도 같은 경로를 쓴다 |
-| Public Subnet에 EC2 1대 | ✅ / ⏳ | `step_instance` (`--count 1`) |
-| SSH 접속 가능 | ✅ / ⏳ | `deploy.sh` 앱 배포(SSH·scp), `verify.sh` SSH 점검 |
-| 웹 서버(Nginx 등) 설치·실행 | ✅ 로컬 리허설 / ⏳ | Nginx(`server/user-data.sh`) + ai_chatbot(`server/provision-app.sh`, systemd `ai-chatbot`). `verify.sh`가 `systemctl is-active nginx`·`ai-chatbot` 확인 |
-| 인스턴스 안 `curl http://localhost` → 200 | ✅ 로컬 리허설 / ⏳ | 원 응답은 앱의 로그인 리다이렉트 `303`(그대로 기록), `curl -L http://localhost` → `200`(로그인 화면), `curl http://localhost/health` → `200`. 리허설 `[PASS] 컨테이너 안 GET -L /`, `verify.sh` |
-| SG: 필요한 포트만, 80 ← 0.0.0.0/0, 22 ← 내 IP | ✅ / ⏳ | `step_sg`(8000은 열지 않음), `02-security-group.txt`, 테스트 `test_security_group_has_no_8000_rule` |
+| VPC 1개 | ✅ AWS 확인 | `vpc-0537054fdd13b3d50` (10.0.0.0/16), `deploy.sh` `step_vpc`, 테스트 `test_deploy_happy_path…` |
+| Public Subnet 1개 | ✅ AWS 확인 | `subnet-076f1f9cdf94d7766` (10.0.1.0/24, ap-northeast-2a, 퍼블릭 IP 자동 할당), `step_subnet` |
+| IGW를 VPC에 연결 | ✅ AWS 확인 | `igw-0375c266891e27f35` → `vpc-0537054fdd13b3d50` `available`, `step_igw` |
+| Route Table에 `0.0.0.0/0 → IGW` | ✅ AWS 확인 | `step_route`, 테스트가 `--destination-cidr-block 0.0.0.0/0 --gateway-id igw-…` 확인 |
+| 인스턴스 아웃바운드(`curl https://example.com`) | ✅ AWS 확인 | 서버에서 `200`. `verify.sh`가 SSH로 확인 → `04-verify.txt`. 첫 부팅의 apt·pip 설치도 같은 경로를 쓴다 |
+| Public Subnet에 EC2 1대 | ✅ AWS 확인 | `b3-1-web` `i-00b27441308728af5` (t3.micro, Ubuntu 24.04.5 LTS, IMDSv2 필수), `step_instance` |
+| SSH 접속 가능 | ✅ AWS 확인 | `ssh -i state/b3-1-key.pem ubuntu@43.201.112.45`. 개인키를 잃어 EC2 Instance Connect로 새 키를 등록했다([troubleshooting.md AWS 사례](docs/troubleshooting.md#aws-실행-시-사례--ssh-개인키-분실--내-ip-변경-2026-10-09)) |
+| 웹 서버(Nginx 등) 설치·실행 | ✅ 로컬 리허설·AWS 확인 | Nginx(`server/user-data.sh`) + ai_chatbot(`server/provision-app.sh`, systemd `ai-chatbot`). `verify.sh`가 `systemctl is-active nginx`·`ai-chatbot` 확인 |
+| 인스턴스 안 `curl http://localhost` → 200 | ✅ 로컬 리허설·AWS 확인 | 원 응답은 앱의 로그인 리다이렉트 `303`(그대로 기록), `curl -L http://localhost` → `200`(로그인 화면), `curl http://localhost/health` → `200`. 리허설 `[PASS] 컨테이너 안 GET -L /`, `verify.sh` |
+| SG: 필요한 포트만, 80 ← 0.0.0.0/0, 22 ← 내 IP | ✅ AWS 확인 | `b3-1-web-sg` 인바운드 2개(80 ← 0.0.0.0/0, 22 ← 내 IP/32). 내 IP가 바뀌어 22 규칙을 새 IP로 교체했다. `step_sg`(8000은 열지 않음), `02-security-group.txt`, 테스트 `test_security_group_has_no_8000_rule` |
 | SG: 0.0.0.0/0 전체 포트 규칙 없음 | ✅ | 테스트가 `FromPort=0,ToPort=65535`·`IpProtocol=-1` 부재 확인 |
-| IAM 사용자 1개, EC2/VPC/SG 범위로 제한, S3·RDS 없음, Admin 없음 | ✅ 정책·도우미 / ⏳ 생성 | `iam/least-privilege-policy.json`(앱 배포로 바뀌지 않음), 정책 테스트 3개 |
-| 외부 접속 검증(택1) — B 선택, README 명시 | ✅ / ⏳ 실행 | `verify.sh`(`/health` → 200 + `{"status":"ok"}`), 이 README |
+| IAM 사용자 1개, EC2/VPC/SG 범위로 제한, S3·RDS 없음, Admin 없음 | ✅ AWS 확인 | `b3-1-operator` ← `b3-1-least-privilege` + 로그인용 `IAMUserChangePassword`·`SignInLocalDevelopmentAccess`. `iam/least-privilege-policy.json`(앱 배포로 바뀌지 않음), 정책 테스트 3개. IAM 도우미 실행용 관리자 사용자 `b3-1-admin`(`IAMFullAccess`)은 따로 둔다 |
+| 외부 접속 검증(택1) — B 선택, README 명시 | ✅ AWS 확인 | `verify.sh`(`/health` → 200 + `{"status":"ok"}`), 이 README |
 | 실습 후 정리 + 근거 (EC2·EBS·EIP·IGW·VPC) | ✅ 스크립트 / ⏳ 실행 | `cleanup.sh`, `05-cleanup.txt`, 체크리스트 |
 
 **제약 사항**
@@ -411,7 +422,7 @@ python3 -m json.tool iam/least-privilege-policy.json > /dev/null                
 | 제약 | 상태 | 근거 |
 |---|---|---|
 | 프리 티어 범위 (micro 1대, EBS 8GiB) | ✅ / ⏳ 계정 확인 | `t3.micro`/`t2.micro`만 허용(스크립트 + IAM Deny), gp3 8GiB. 계정의 대상 유형은 사전 점검이 조회해 아니면 경고([확인 방법](#프리-티어-대상-인스턴스-유형-확인)) |
-| 루트 계정 사용 안 함 | ✅ | 루트 키면 `deploy.sh`·`cleanup.sh`·IAM 도우미 모두 거부 |
+| 루트 계정 사용 안 함 | ✅ 스크립트 / ⚠️ 1회 | 루트 키면 `deploy.sh`·`cleanup.sh`·IAM 도우미 모두 거부. 관리자 IAM 사용자가 없어 2026-10-09 키 재발급·`b3-1-admin` 생성에 루트 콘솔 로그인(`aws login`)을 한 번 썼다. 이후 `b3-1-admin`·`b3-1-operator`로 전환 |
 | 모든 리소스 서울 리전 | ✅ | 리전 고정 + IAM 리전 조건 + 테스트가 모든 ec2 호출의 리전 확인 |
 | Ubuntu LTS, EBS 8~10GiB, 키페어 1개 안전 보관 | ✅ | Ubuntu 24.04, 8GiB, `state/b3-1-key.pem` 400·`.gitignore` |
 | 정리 대상 추적 (EC2·EIP·NAT·ELB·RDS·EBS) | ✅ / ⏳ | 태그 + 상태 파일, 체크리스트 |
@@ -433,7 +444,8 @@ python3 -m json.tool iam/least-privilege-policy.json > /dev/null                
 │   └── provision-app.sh              앱 설치 (소스 교체, venv·pip, .env 600 보정, systemd ai-chatbot, /health 대기)
 ├── iam/
 │   ├── least-privilege-policy.json   실습 사용자 정책
-│   └── create-iam-user.sh            (선택) IAM 사용자 + .env 만들기
+│   ├── create-iam-user.sh            (선택) IAM 사용자 + .env 만들기
+│   └── set-console-password.sh       (선택) 콘솔·aws login 비밀번호 만들기
 ├── local/
 │   ├── rehearsal.sh                  로컬 리허설 (같은 user-data·provision-app을 컨테이너에서)
 │   ├── stack.sh                      리허설 공용 (앱 git archive, 리허설 전용 가짜 .env)

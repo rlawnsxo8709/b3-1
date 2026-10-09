@@ -6,7 +6,7 @@
 | 사례 | 환경 | 상태 |
 |---|---|---|
 | [사례 1 — 서버는 떠 있는데 밖에서 접속이 안 된다](#사례-1--서버는-떠-있는데-밖에서-접속이-안-된다) | **로컬 리허설** (Docker, AWS 아님) | ✅ 실제 재현·해결, 증거 있음 |
-| [AWS 실행 시 사례 기입란](#aws-실행-시-사례-기입란) | AWS | ⏳ AWS 실행 후 기입 |
+| [AWS 사례 — SSH 개인키 분실 + 내 IP 변경](#aws-실행-시-사례--ssh-개인키-분실--내-ip-변경-2026-10-09) | **AWS** | ✅ 실제 발생·해결 (2026-10-09) |
 
 참고 절: [외부 접속 불가 점검 순서](#외부-접속-불가-점검-순서) · [502 Bad Gateway — 앱 점검](#502-bad-gateway--앱-점검) · [SSH 허용 IP 갱신](#ssh-허용-ip-갱신) · [IAM 권한 부족](#iam-권한-부족-unauthorizedoperation) · [설계 단계에서 미리 막은 문제](#설계-단계에서-미리-막은-문제)
 
@@ -88,21 +88,18 @@ OK
 
 ---
 
-## AWS 실행 시 사례 기입란
+## AWS 실행 시 사례 — SSH 개인키 분실 + 내 IP 변경 (2026-10-09)
 
-> ⏳ AWS 실행 후 기입. `./deploy.sh`·`./verify.sh`·`./cleanup.sh` 실행 중 문제가 생기면 아래 표를 채운다.
-> 근거는 `evidence/aws/*.txt`(앱 설치는 `03b-app.txt`), 스크립트의 `[ERROR]` 출력, EC2 안의 `/var/log/cloud-init-output.log`·`/var/log/nginx/error.log`·`sudo journalctl -u ai-chatbot`에서 가져온다.
+> 근거: 이 작업 PC에서 실행한 AWS CLI 조회와 SSH 결과. 배포한 PC의 `evidence/aws/*.txt`는 이 저장소에 아직 없다.
 
 | 단계 | 내용 |
 |---|---|
-| 증상 | ⏳ AWS 실행 후 기입 |
-| 가설 | ⏳ AWS 실행 후 기입 |
-| 검증 (명령과 출력) | ⏳ AWS 실행 후 기입 |
-| 조치 | ⏳ AWS 실행 후 기입 |
-| 결과 | ⏳ AWS 실행 후 기입 |
-| 재발 방지 | ⏳ AWS 실행 후 기입 |
-
-문제가 없었다면 "AWS 실행에서는 문제 없이 11개 항목 FAIL 0(`evidence/aws/04-verify.txt`)"이라고 적는다.
+| 증상 | 배포는 다른 PC에서 끝났고 서버(`b3-1-web`)는 `running`인데, 이 PC에는 `state/`가 없어 `state/b3-1-key.pem`이 없다. SSH로 들어갈 수 없다 |
+| 가설 | ① 개인키는 `create-key-pair` 때 한 번만 내려받을 수 있어 AWS에서 다시 받을 수 없다 ② 새 키페어를 만들어도 이미 실행 중인 인스턴스의 `authorized_keys`에는 들어가지 않는다 ③ 작업 장소가 바뀌어 SG의 22번 허용 IP와 지금 IP가 다를 수 있다 |
+| 검증 (명령과 출력) | `aws ec2 describe-key-pairs` → `b3-1-key`는 있지만 개인키 없음. `aws ec2 describe-security-groups` → 22 ← 배포 당시 IP/32. `curl https://checkip.amazonaws.com` → 다른 IP. 가설 ①②③ 모두 맞음 |
+| 조치 | ① SG 22 규칙을 지금 IP/32로 추가하고 옛 규칙 제거(`authorize-`/`revoke-security-group-ingress`) ② 로컬에서 `ssh-keygen -t ed25519 -f state/b3-1-key.pem` ③ `aws ec2-instance-connect send-ssh-public-key`로 60초짜리 임시 키를 넣고 그 사이 SSH로 새 공개키를 `~/.ssh/authorized_keys`에 추가 |
+| 결과 | 임시 키가 만료된 뒤에도 `ssh -i state/b3-1-key.pem ubuntu@43.201.112.45` 접속 성공, `systemctl is-active ai-chatbot` → `active`. 서버·데이터(SQLite)는 그대로 유지 |
+| 재발 방지 | `state/`(키·리소스 ID)는 git에 올리지 않으므로 배포한 PC 밖에 따로 백업한다. Instance Connect에는 `ec2-instance-connect:SendSSHPublicKey` 권한이 필요하다(실습 정책에는 없음 — 관리자 권한으로 수행). AWS에 등록된 `b3-1-key`는 옛 공개키 그대로이므로 접속에는 로컬의 새 키를 쓴다 |
 
 ---
 

@@ -552,6 +552,42 @@ test_create_iam_user_needs_admin_credentials_and_rejects_root() {
   assert_contains "$OUT" "루트"; assert_not_contains "$(cat "$FAKE_LOG")" "iam create-user"
 }
 
+test_set_console_password_creates_login_profile_for_cli_login() {
+  setup_sandbox
+  FAKE_IAM_USER_EXISTS=1 ADMIN_AWS_ACCESS_KEY_ID=AKIAADMINADMINADMIN1 ADMIN_AWS_SECRET_ACCESS_KEY=adminSecret \
+    run_in_sandbox ./iam/set-console-password.sh; assert_exit 0
+  local L; L="$(cat "$FAKE_LOG")"
+  assert_contains "$L" "arn:aws:iam::aws:policy/IAMUserChangePassword"
+  assert_contains "$L" "arn:aws:iam::aws:policy/SignInLocalDevelopmentAccess"
+  assert_contains "$L" "create-login-profile --user-name b3-1-operator"; assert_contains "$L" "--password-reset-required"
+  assert_not_contains "$L" "create-access-key"; assert_not_contains "$L" "create-user"
+  assert_contains "$OUT" "초기 비밀번호"; assert_contains "$OUT" "https://123456789012.signin.aws.amazon.com/console"
+  [ ! -e "$SANDBOX/.env" ] || fail ".env를 건드리면 안 됨"
+}
+
+test_set_console_password_needs_reset_flag_for_existing_password() {
+  setup_sandbox
+  FAKE_IAM_USER_EXISTS=1 FAKE_IAM_LOGIN_PROFILE_EXISTS=1 ADMIN_AWS_ACCESS_KEY_ID=AKIAADMINADMINADMIN1 ADMIN_AWS_SECRET_ACCESS_KEY=adminSecret \
+    run_in_sandbox ./iam/set-console-password.sh; assert_exit 1
+  assert_contains "$OUT" "--reset"; assert_not_contains "$(cat "$FAKE_LOG")" "login-profile --user-name b3-1-operator --password"
+  FAKE_IAM_USER_EXISTS=1 FAKE_IAM_LOGIN_PROFILE_EXISTS=1 ADMIN_AWS_ACCESS_KEY_ID=AKIAADMINADMINADMIN1 ADMIN_AWS_SECRET_ACCESS_KEY=adminSecret \
+    run_in_sandbox ./iam/set-console-password.sh --reset; assert_exit 0
+  assert_contains "$(cat "$FAKE_LOG")" "update-login-profile --user-name b3-1-operator"
+}
+
+test_set_console_password_needs_user_and_rejects_root_without_flag() {
+  setup_sandbox
+  ADMIN_AWS_ACCESS_KEY_ID=AKIAADMINADMINADMIN1 ADMIN_AWS_SECRET_ACCESS_KEY=adminSecret \
+    run_in_sandbox ./iam/set-console-password.sh; assert_exit 1
+  assert_contains "$OUT" "create-iam-user.sh"
+  FAKE_ROOT=1 FAKE_IAM_USER_EXISTS=1 ADMIN_AWS_ACCESS_KEY_ID=AKIAADMINADMINADMIN1 ADMIN_AWS_SECRET_ACCESS_KEY=adminSecret \
+    run_in_sandbox ./iam/set-console-password.sh; assert_exit 1
+  assert_contains "$OUT" "--allow-root"; assert_not_contains "$(cat "$FAKE_LOG")" "login-profile --user-name"
+  FAKE_ROOT=1 FAKE_IAM_USER_EXISTS=1 ADMIN_AWS_ACCESS_KEY_ID=AKIAADMINADMINADMIN1 ADMIN_AWS_SECRET_ACCESS_KEY=adminSecret \
+    run_in_sandbox ./iam/set-console-password.sh --allow-root; assert_exit 0
+  assert_contains "$(cat "$FAKE_LOG")" "create-login-profile --user-name b3-1-operator"
+}
+
 # ---------------------------------------------------------------- Fix round 1: 리뷰 후속 회귀 테스트
 
 # [1] 셸에 남은 키가 .env를 대신하면 안 된다(다른 계정·루트 키가 조용히 쓰이는 사고 방지)

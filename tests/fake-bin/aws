@@ -13,6 +13,7 @@
 #   FAKE_NOTFOUND_FOR=문자열  인자에 그 문자열(예: subnet-0fake)이 든 describe 외 호출을 NotFound로 실패시킨다
 #   FAKE_FREE_TIER_TYPES="t3.micro t3.small"  free-tier-eligible 필터 조회 결과(기본값이 이것)
 #   FAKE_IAM_USER_EXISTS=1 / FAKE_IAM_POLICY_EXISTS=1  iam get-user / get-policy 성공
+#   FAKE_IAM_LOGIN_PROFILE_EXISTS=1  iam get-login-profile 성공(콘솔 비밀번호가 이미 있음)
 set -u
 log="${FAKE_LOG:-/dev/null}"
 printf 'aws %s region=%s\n' "$*" "${AWS_DEFAULT_REGION:-unset}" >> "$log"
@@ -136,6 +137,14 @@ case "$svc $op" in
       echo "arn:aws:iam::123456789012:policy/b3-1-least-privilege"
     else
       echo "An error occurred (NoSuchEntity) when calling the GetPolicy operation: Policy does not exist." >&2
+      exit 254
+    fi
+    ;;
+  "iam get-login-profile")
+    if [ "${FAKE_IAM_LOGIN_PROFILE_EXISTS:-0}" = 1 ]; then
+      echo "b3-1-operator"
+    else
+      echo "An error occurred (NoSuchEntity) when calling the GetLoginProfile operation: Login Profile for User b3-1-operator cannot be found." >&2
       exit 254
     fi
     ;;
